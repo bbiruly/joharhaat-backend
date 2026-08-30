@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "noEmit": false, "sourceMap": true, "declaration": true },
+  "include": ["src/**/*.ts"],
+  "exclude": ["tests", "prisma"]
+}

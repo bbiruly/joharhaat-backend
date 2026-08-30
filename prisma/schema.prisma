@@ -1,0 +1,419 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  CUSTOMER
+  VENDOR
+  ADMIN
+  SYSTEM
+}
+
+enum JharkhandDistrict {
+  BOKARO
+  CHATRA
+  DEOGHAR
+  DHANBAD
+  DUMKA
+  EAST_SINGHBHUM
+  GARHWA
+  GIRIDIH
+  GODDA
+  GUMLA
+  HAZARIBAGH
+  JAMTARA
+  KHUNTI
+  KODERMA
+  LATEHAR
+  LOHARDAGA
+  PAKUR
+  PALAMU
+  RAMGARH
+  RANCHI
+  SAHEBGANJ
+  SARAIKELA_KHARSAWAN
+  SIMDEGA
+  WEST_SINGHBHUM
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  HOLD
+  REJECTED
+}
+
+enum WeeklyHaatDay {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum CartAbandonmentStatus {
+  ACTIVE
+  ABANDONED
+  REMINDER_SENT
+  CONVERTED
+  RECOVERED
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum FulfillmentStatus {
+  PENDING
+  PACKED
+  SHIPPED
+  DELIVERED
+  RTO
+  CANCELLED
+}
+
+enum PayoutStatus {
+  PENDING
+  ELIGIBLE
+  RELEASED
+  BLOCKED
+  REVERSED
+}
+
+enum LedgerType {
+  ESCROW_RELEASE
+  PAYOUT_REVERSAL
+  MANUAL_ADJUSTMENT
+  BANK_TRANSFER
+}
+
+enum LedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+enum NotificationType {
+  VENDOR_NEW_ORDER_SMS
+}
+
+enum NotificationStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+model User {
+  id           String           @id @default(cuid())
+  email        String?          @unique
+  mobile       String           @unique
+  passwordHash String?          @map("password_hash")
+  name         String
+  role         UserRole         @default(CUSTOMER)
+  isActive     Boolean          @default(true) @map("is_active")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+  vendor       Vendor?
+  addresses    Address[]
+  carts        Cart[]
+  orders       Order[]
+  statusLogs   OrderStatusLog[] @relation("StatusActor")
+
+  @@map("users")
+}
+
+model Address {
+  id         String            @id @default(cuid())
+  userId     String            @map("user_id")
+  label      String
+  fullName   String            @map("full_name")
+  mobile     String
+  line1      String
+  line2      String?
+  landmark   String?
+  district   JharkhandDistrict
+  state      String            @default("Jharkhand")
+  postalCode String            @map("postal_code")
+  isDefault  Boolean           @default(false) @map("is_default")
+  createdAt  DateTime          @default(now()) @map("created_at")
+  updatedAt  DateTime          @updatedAt @map("updated_at")
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders     Order[]
+
+  @@index([userId, isDefault])
+  @@map("addresses")
+}
+
+model Vendor {
+  id                 String               @id @default(cuid())
+  ownerId            String               @unique @map("owner_id")
+  businessName       String               @map("business_name")
+  shgGroupName       String?              @map("shg_group_name")
+  district           JharkhandDistrict
+  region             String
+  msmeNumber         String               @unique @map("msme_number")
+  msmeCertificateUrl String               @map("msme_certificate_url")
+  verificationStatus VerificationStatus   @default(PENDING) @map("verification_status")
+  walletBalance      Decimal              @default(0) @map("wallet_balance") @db.Decimal(14, 2)
+  createdAt          DateTime             @default(now()) @map("created_at")
+  updatedAt          DateTime             @updatedAt @map("updated_at")
+  owner              User                 @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  products           Product[]
+  vendorOrders       VendorOrder[]
+  walletLedgers      WalletLedger[]
+  notifications      NotificationOutbox[]
+
+  @@index([district, verificationStatus])
+  @@map("vendors")
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  slug      String    @unique
+  name      String
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  products  Product[]
+
+  @@map("categories")
+}
+
+model WeeklyHaat {
+  id        String            @id @default(cuid())
+  name      String
+  district  JharkhandDistrict
+  day       WeeklyHaatDay
+  opensAt   String            @map("opens_at")
+  closesAt  String            @map("closes_at")
+  isEnabled Boolean           @default(true) @map("is_enabled")
+  isLive    Boolean           @default(false) @map("is_live")
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
+  products  Product[]
+
+  @@unique([district, day, name])
+  @@index([day, isEnabled, isLive])
+  @@map("weekly_haats")
+}
+
+model Product {
+  id            String            @id @default(cuid())
+  vendorId      String            @map("vendor_id")
+  categoryId    String            @map("category_id")
+  weeklyHaatId  String?           @map("weekly_haat_id")
+  name          String
+  slug          String            @unique
+  description   String
+  artisanStory  String?           @map("artisan_story")
+  district      JharkhandDistrict
+  weeklyHaatDay WeeklyHaatDay     @map("weekly_haat_day")
+  minPrice      Decimal           @map("min_price") @db.Decimal(12, 2)
+  isPublished   Boolean           @default(false) @map("is_published")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  vendor        Vendor            @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  category      Category          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  weeklyHaat    WeeklyHaat?       @relation(fields: [weeklyHaatId], references: [id], onDelete: SetNull)
+  variants      ProductVariant[]
+
+  @@index([isPublished, district, weeklyHaatDay])
+  @@index([categoryId, isPublished, minPrice])
+  @@index([vendorId, isPublished])
+  @@map("products")
+}
+
+model ProductVariant {
+  id         String      @id @default(cuid())
+  productId  String      @map("product_id")
+  sku        String      @unique
+  label      String
+  price      Decimal     @db.Decimal(12, 2)
+  stock      Int         @default(0)
+  lowStock   Boolean     @default(true) @map("low_stock")
+  version    Int         @default(0)
+  isActive   Boolean     @default(true) @map("is_active")
+  createdAt  DateTime    @default(now()) @map("created_at")
+  updatedAt  DateTime    @updatedAt @map("updated_at")
+  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  @@index([productId, isActive, stock])
+  @@index([price, stock])
+  @@map("product_variants")
+}
+
+model Cart {
+  id                String                @id @default(cuid())
+  customerId        String                @map("customer_id")
+  abandonmentStatus CartAbandonmentStatus @default(ACTIVE) @map("abandonment_status")
+  abandonedAt       DateTime?             @map("abandoned_at")
+  lastReminderAt    DateTime?             @map("last_reminder_at")
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
+  customer          User                  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items             CartItem[]
+  order             Order?
+
+  @@index([customerId, abandonmentStatus])
+  @@index([abandonmentStatus, updatedAt])
+  @@map("carts")
+}
+
+model CartItem {
+  id        String         @id @default(cuid())
+  cartId    String         @map("cart_id")
+  variantId String         @map("variant_id")
+  quantity  Int
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+  cart      Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@unique([cartId, variantId])
+  @@map("cart_items")
+}
+
+model Order {
+  id                String            @id @default(cuid())
+  orderNumber       String            @unique @map("order_number")
+  idempotencyKey    String            @unique @map("idempotency_key")
+  customerId        String            @map("customer_id")
+  cartId            String            @unique @map("cart_id")
+  deliveryAddressId String            @map("delivery_address_id")
+  gmv               Decimal           @db.Decimal(14, 2)
+  discount          Decimal           @default(0) @db.Decimal(14, 2)
+  cgst              Decimal           @db.Decimal(14, 2)
+  sgst              Decimal           @db.Decimal(14, 2)
+  courierCharge     Decimal           @map("courier_charge") @db.Decimal(12, 2)
+  totalPayable      Decimal           @map("total_payable") @db.Decimal(14, 2)
+  paymentStatus     PaymentStatus     @default(PENDING) @map("payment_status")
+  recipientName     String            @map("recipient_name")
+  recipientMobile   String            @map("recipient_mobile")
+  addressLine1      String            @map("address_line1")
+  addressLine2      String?           @map("address_line2")
+  district          JharkhandDistrict
+  postalCode        String            @map("postal_code")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+  customer          User              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  cart              Cart              @relation(fields: [cartId], references: [id], onDelete: Restrict)
+  deliveryAddress   Address           @relation(fields: [deliveryAddressId], references: [id], onDelete: Restrict)
+  vendorOrders      VendorOrder[]
+
+  @@index([customerId, createdAt])
+  @@index([paymentStatus, createdAt])
+  @@map("orders")
+}
+
+model VendorOrder {
+  id              String               @id @default(cuid())
+  orderId         String               @map("order_id")
+  vendorId        String               @map("vendor_id")
+  trackingId      String               @unique @map("tracking_id")
+  status          FulfillmentStatus    @default(PENDING)
+  payoutStatus    PayoutStatus         @default(PENDING) @map("payout_status")
+  gmv             Decimal              @db.Decimal(14, 2)
+  adminCommission Decimal              @map("admin_commission") @db.Decimal(14, 2)
+  cgst            Decimal              @db.Decimal(14, 2)
+  sgst            Decimal              @db.Decimal(14, 2)
+  courierCharge   Decimal              @map("courier_charge") @db.Decimal(12, 2)
+  netVendorPayout Decimal              @map("net_vendor_payout") @db.Decimal(14, 2)
+  deliveredAt     DateTime?            @map("delivered_at")
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+  order           Order                @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  vendor          Vendor               @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  items           OrderItem[]
+  statusLogs      OrderStatusLog[]
+  walletLedgers   WalletLedger[]
+  notifications   NotificationOutbox[]
+
+  @@unique([orderId, vendorId])
+  @@index([vendorId, status, createdAt])
+  @@index([status, payoutStatus])
+  @@map("vendor_orders")
+}
+
+model OrderItem {
+  id            String         @id @default(cuid())
+  vendorOrderId String         @map("vendor_order_id")
+  variantId     String         @map("variant_id")
+  productName   String         @map("product_name")
+  variantLabel  String         @map("variant_label")
+  sku           String
+  quantity      Int
+  unitPrice     Decimal        @map("unit_price") @db.Decimal(12, 2)
+  lineTotal     Decimal        @map("line_total") @db.Decimal(14, 2)
+  vendorOrder   VendorOrder    @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
+  variant       ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@index([vendorOrderId])
+  @@map("order_items")
+}
+
+model OrderStatusLog {
+  id            String            @id @default(cuid())
+  vendorOrderId String            @map("vendor_order_id")
+  status        FulfillmentStatus
+  actorUserId   String?           @map("actor_user_id")
+  note          String?
+  createdAt     DateTime          @default(now()) @map("created_at")
+  vendorOrder   VendorOrder       @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
+  actor         User?             @relation("StatusActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([vendorOrderId, createdAt])
+  @@map("order_status_logs")
+}
+
+model WalletLedger {
+  id            String          @id @default(cuid())
+  vendorId      String          @map("vendor_id")
+  vendorOrderId String          @map("vendor_order_id")
+  type          LedgerType
+  direction     LedgerDirection
+  amount        Decimal         @db.Decimal(14, 2)
+  balanceAfter  Decimal         @map("balance_after") @db.Decimal(14, 2)
+  reference     String          @unique
+  metadata      Json?
+  createdAt     DateTime        @default(now()) @map("created_at")
+  vendor        Vendor          @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  vendorOrder   VendorOrder     @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+
+  @@unique([vendorId, vendorOrderId, type])
+  @@index([vendorId, createdAt])
+  @@map("wallet_ledgers")
+}
+
+model NotificationOutbox {
+  id            String             @id @default(cuid())
+  vendorId      String             @map("vendor_id")
+  vendorOrderId String             @map("vendor_order_id")
+  type          NotificationType
+  recipient     String
+  payload       Json
+  status        NotificationStatus @default(PENDING)
+  attempts      Int                @default(0)
+  lastError     String?            @map("last_error")
+  processedAt   DateTime?          @map("processed_at")
+  createdAt     DateTime           @default(now()) @map("created_at")
+  updatedAt     DateTime           @updatedAt @map("updated_at")
+  vendor        Vendor             @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  vendorOrder   VendorOrder        @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@map("notification_outbox")
+}

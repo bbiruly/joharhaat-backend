@@ -1,0 +1,51 @@
+{
+  "name": "joharhaat-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "engines": { "node": ">=22.13.0 <24" },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prisma:generate": "prisma generate",
+    "prisma:format": "prisma format",
+    "prisma:validate": "prisma validate",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:seed": "prisma db seed",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "compression": "1.8.1",
+    "cors": "2.8.5",
+    "dotenv": "17.2.3",
+    "express": "5.1.0",
+    "express-rate-limit": "8.2.1",
+    "helmet": "8.1.0",
+    "jose": "6.1.2",
+    "pg": "8.16.3",
+    "pino": "10.1.0",
+    "pino-http": "11.0.0",
+    "zod": "4.1.13"
+  },
+  "devDependencies": {
+    "@types/compression": "1.8.1",
+    "@types/cors": "2.8.19",
+    "@types/express": "5.0.5",
+    "@types/node": "22.19.1",
+    "@types/pg": "8.15.6",
+    "prisma": "7.10.0",
+    "supertest": "7.1.4",
+    "@types/supertest": "6.0.3",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "4.0.16"
+  }
+}

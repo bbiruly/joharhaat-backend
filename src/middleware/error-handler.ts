@@ -1,0 +1,5 @@
+import type { ErrorRequestHandler, RequestHandler } from 'express';
+import { Prisma } from '../generated/prisma/client.js';
+import { ApiError } from '../utils/api-error.js';
+export const notFound: RequestHandler = (request, _response, next) => next(new ApiError(404, `Route ${request.method} ${request.originalUrl} was not found.`, 'NOT_FOUND'));
+export const errorHandler: ErrorRequestHandler = (error: unknown, request, response, _next) => { let normalized = error instanceof ApiError ? error : new ApiError(500, 'An unexpected server error occurred.', 'INTERNAL_ERROR'); if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') normalized = new ApiError(409, 'A unique record already exists.', 'CONFLICT', error.meta); if (normalized.statusCode >= 500) request.log?.error({ err: error, requestId: request.requestId }, 'request failed'); response.status(normalized.statusCode).json({ error: { code: normalized.code, message: normalized.message, details: normalized.details, requestId: request.requestId } }); };

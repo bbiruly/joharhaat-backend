@@ -1,0 +1,6 @@
+import 'dotenv/config';
+import { z } from 'zod';
+const schema = z.object({ NODE_ENV: z.enum(['development', 'test', 'production']).default('development'), PORT: z.coerce.number().int().min(1).max(65535).default(4000), DATABASE_URL: z.string().min(1), DIRECT_URL: z.string().min(1), JWT_SECRET: z.string().min(32), JWT_ISSUER: z.string().default('joharhaat-api'), JWT_AUDIENCE: z.string().default('joharhaat-web'), CORS_ORIGINS: z.string().default('http://localhost:3000'), ADMIN_COMMISSION_RATE: z.coerce.number().min(0).max(1).default(0.1), CGST_RATE: z.coerce.number().min(0).max(1).default(0.025), SGST_RATE: z.coerce.number().min(0).max(1).default(0.025), LOW_STOCK_THRESHOLD: z.coerce.number().int().positive().default(5), DEFAULT_PAGE_SIZE: z.coerce.number().int().positive().max(100).default(20), MAX_PAGE_SIZE: z.coerce.number().int().positive().max(500).default(100), SMS_PROVIDER: z.enum(['mock']).default('mock'), SMS_FROM: z.string().default('JOHARHAAT'), LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info') });
+const result = schema.safeParse(process.env);
+if (!result.success) throw new Error(`Invalid environment configuration: ${result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`);
+export const env = result.data;
