@@ -1,4 +1,5 @@
 import { PrismaPg } from '@prisma/adapter-pg';
+import { hash } from 'argon2';
 import { JharkhandDistrict, PrismaClient, UserRole, VerificationStatus, WeeklyHaatDay } from '../src/generated/prisma/client.js';
 
 const connectionString = process.env.DIRECT_URL;
@@ -6,9 +7,10 @@ if (!connectionString) throw new Error('DIRECT_URL is required to seed the datab
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
 
 async function main(): Promise<void> {
-  const customer = await prisma.user.upsert({ where: { mobile: '9876543210' }, update: {}, create: { name: 'Asha Munda', mobile: '9876543210', email: 'asha@example.test', role: UserRole.CUSTOMER } });
-  await prisma.user.upsert({ where: { mobile: '9999999999' }, update: {}, create: { name: 'JoharHaat Admin', mobile: '9999999999', email: 'admin@example.test', role: UserRole.ADMIN } });
-  const vendorOwner = await prisma.user.upsert({ where: { mobile: '9765432109' }, update: {}, create: { name: 'Sushila Devi', mobile: '9765432109', role: UserRole.VENDOR } });
+  const demoPassword = await hash('JoharHaat123');
+  const customer = await prisma.user.upsert({ where: { mobile: '9876543210' }, update: { passwordHash: demoPassword }, create: { name: 'Asha Munda', mobile: '9876543210', email: 'asha@example.test', passwordHash: demoPassword, role: UserRole.CUSTOMER } });
+  await prisma.user.upsert({ where: { mobile: '9999999999' }, update: { passwordHash: demoPassword }, create: { name: 'JoharHaat Admin', mobile: '9999999999', email: 'admin@example.test', passwordHash: demoPassword, role: UserRole.ADMIN } });
+  const vendorOwner = await prisma.user.upsert({ where: { mobile: '9765432109' }, update: { passwordHash: demoPassword }, create: { name: 'Sushila Devi', mobile: '9765432109', email: 'vendor@example.test', passwordHash: demoPassword, role: UserRole.VENDOR } });
   const vendor = await prisma.vendor.upsert({
     where: { msmeNumber: 'UDYAM-JH-20-0000001' },
     update: { verificationStatus: VerificationStatus.VERIFIED },
@@ -30,6 +32,7 @@ async function main(): Promise<void> {
   const existingCart = await prisma.cart.findFirst({ where: { customerId: customer.id, order: null } });
   const cart = existingCart ?? await prisma.cart.create({ data: { customerId: customer.id } });
   await prisma.cartItem.upsert({ where: { cartId_variantId: { cartId: cart.id, variantId: variant.id } }, update: { quantity: 2 }, create: { cartId: cart.id, variantId: variant.id, quantity: 2 } });
+  await prisma.coupon.upsert({ where: { code: 'JOHAR10' }, update: {}, create: { code: 'JOHAR10', percent: '0.10', maxDiscount: '250.00', minOrderValue: '300.00', startsAt: new Date('2025-01-01T00:00:00Z'), expiresAt: new Date('2030-12-31T23:59:59Z'), perUserLimit: 1, isActive: true } });
   console.info({ customerId: customer.id, addressId: address.id, cartId: cart.id, variantId: variant.id }, 'Seed complete');
 }
 

@@ -90,7 +90,18 @@ export async function processCheckout(customerId: string, idempotencyKey: string
       return { variant, quantity, lineTotal: money(variant.price.mul(quantity)) };
     });
 
-    const totals = calculateCheckoutTotals(sumMoney(lines.map((line) => line.lineTotal)), money(input.discountAmount), money(input.courierCharge));
+    const gmv = sumMoney(lines.map((line) => line.lineTotal));
+    let coupon: Prisma.CouponGetPayload<object> | null = null;
+    let discount = money(input.discountAmount);
+    if (input.couponCode) {
+      coupon = await tx.coupon.findUnique({ where: { code: input.couponCode } });
+      const now = new Date();
+      if (!coupon || !coupon.isActive || coupon.startsAt > now || coupon.expiresAt <= now || (coupon.usageLimit !== null && coupon.usedCount >= coupon.usageLimit) || gmv.lessThan(coupon.minOrderValue)) throw new ApiError(422, 'Coupon is invalid, expired or not applicable.', 'COUPON_NOT_APPLICABLE');
+      const userUses = await tx.couponRedemption.count({ where: { couponId: coupon.id, userId: customerId } });
+      if (userUses >= coupon.perUserLimit) throw new ApiError(409, 'Coupon usage limit has been reached.', 'COUPON_LIMIT_REACHED');
+      discount = money(Prisma.Decimal.min(gmv.mul(coupon.percent), coupon.maxDiscount));
+    }
+    const totals = calculateCheckoutTotals(gmv, discount, money(input.courierCharge));
     const groupedLines = new Map<string, typeof lines>();
     for (const line of lines) {
       const vendorId = line.variant.product.vendorId;
@@ -124,6 +135,10 @@ export async function processCheckout(customerId: string, idempotencyKey: string
         postalCode: address.postalCode,
       },
     });
+    if (coupon) {
+      await tx.couponRedemption.create({ data: { couponId: coupon.id, userId: customerId, orderId: order.id, discountAmount: totals.discount } });
+      await tx.coupon.update({ where: { id: coupon.id }, data: { usedCount: { increment: 1 } } });
+    }
 
     const outboxIds: string[] = [];
     for (const [index, group] of groups.entries()) {

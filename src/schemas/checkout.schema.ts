@@ -9,6 +9,7 @@ export const checkoutBodySchema = z.object({
   deliveryAddressId: z.string().trim().min(1),
   courierCharge: z.coerce.number().finite().min(0).max(100_000).default(0),
   discountAmount: z.coerce.number().finite().min(0).max(1_000_000).default(0),
+  couponCode: z.string().trim().toUpperCase().max(30).optional(),
   items: z.array(z.object({
     variantId: z.string().trim().min(1),
     quantity: z.coerce.number().int().positive().max(1_000),

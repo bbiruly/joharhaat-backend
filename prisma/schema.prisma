@@ -115,21 +115,64 @@ enum NotificationStatus {
   FAILED
 }
 
+enum PaymentMethod {
+  UPI
+  CARD
+  COD
+}
+
+enum PaymentIntentStatus {
+  CREATED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  EXPIRED
+}
+
+enum ReservationStatus {
+  ACTIVE
+  CONSUMED
+  RELEASED
+  EXPIRED
+}
+
+enum ModerationStatus {
+  PENDING
+  APPROVED
+  HOLD
+  REJECTED
+}
+
+enum PayoutRequestStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  REJECTED
+}
+
 model User {
-  id           String           @id @default(cuid())
-  email        String?          @unique
-  mobile       String           @unique
-  passwordHash String?          @map("password_hash")
-  name         String
-  role         UserRole         @default(CUSTOMER)
-  isActive     Boolean          @default(true) @map("is_active")
-  createdAt    DateTime         @default(now()) @map("created_at")
-  updatedAt    DateTime         @updatedAt @map("updated_at")
-  vendor       Vendor?
-  addresses    Address[]
-  carts        Cart[]
-  orders       Order[]
-  statusLogs   OrderStatusLog[] @relation("StatusActor")
+  id               String               @id @default(cuid())
+  email            String?              @unique
+  mobile           String               @unique
+  passwordHash     String?              @map("password_hash")
+  name             String
+  role             UserRole             @default(CUSTOMER)
+  isActive         Boolean              @default(true) @map("is_active")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+  vendor           Vendor?
+  addresses        Address[]
+  carts            Cart[]
+  orders           Order[]
+  statusLogs       OrderStatusLog[]     @relation("StatusActor")
+  authSessions     AuthSession[]
+  resetTokens      PasswordResetToken[]
+  wishlist         WishlistItem[]
+  couponUses       CouponRedemption[]
+  applications     VendorApplication[]  @relation("ApplicationOwner")
+  moderationAudits ModerationAudit[]    @relation("Moderator")
+  adminAudits      AdminAuditLog[]      @relation("AdminActor")
 
   @@map("users")
 }
@@ -174,35 +217,38 @@ model Vendor {
   vendorOrders       VendorOrder[]
   walletLedgers      WalletLedger[]
   notifications      NotificationOutbox[]
+  payoutRequests     PayoutRequest[]
 
   @@index([district, verificationStatus])
   @@map("vendors")
 }
 
 model Category {
-  id        String    @id @default(cuid())
-  slug      String    @unique
-  name      String
-  isActive  Boolean   @default(true) @map("is_active")
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-  products  Product[]
+  id                   String                @id @default(cuid())
+  slug                 String                @unique
+  name                 String
+  isActive             Boolean               @default(true) @map("is_active")
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+  products             Product[]
+  managedHaatOverrides ManagedHaatOverride[]
 
   @@map("categories")
 }
 
 model WeeklyHaat {
-  id        String            @id @default(cuid())
+  id        String                @id @default(cuid())
   name      String
   district  JharkhandDistrict
   day       WeeklyHaatDay
-  opensAt   String            @map("opens_at")
-  closesAt  String            @map("closes_at")
-  isEnabled Boolean           @default(true) @map("is_enabled")
-  isLive    Boolean           @default(false) @map("is_live")
-  createdAt DateTime          @default(now()) @map("created_at")
-  updatedAt DateTime          @updatedAt @map("updated_at")
+  opensAt   String                @map("opens_at")
+  closesAt  String                @map("closes_at")
+  isEnabled Boolean               @default(true) @map("is_enabled")
+  isLive    Boolean               @default(false) @map("is_live")
+  createdAt DateTime              @default(now()) @map("created_at")
+  updatedAt DateTime              @updatedAt @map("updated_at")
   products  Product[]
+  overrides ManagedHaatOverride[]
 
   @@unique([district, day, name])
   @@index([day, isEnabled, isLive])
@@ -228,6 +274,7 @@ model Product {
   category      Category          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   weeklyHaat    WeeklyHaat?       @relation(fields: [weeklyHaatId], references: [id], onDelete: SetNull)
   variants      ProductVariant[]
+  wishlistItems WishlistItem[]
 
   @@index([isPublished, district, weeklyHaatDay])
   @@index([categoryId, isPublished, minPrice])
@@ -236,20 +283,21 @@ model Product {
 }
 
 model ProductVariant {
-  id         String      @id @default(cuid())
-  productId  String      @map("product_id")
-  sku        String      @unique
-  label      String
-  price      Decimal     @db.Decimal(12, 2)
-  stock      Int         @default(0)
-  lowStock   Boolean     @default(true) @map("low_stock")
-  version    Int         @default(0)
-  isActive   Boolean     @default(true) @map("is_active")
-  createdAt  DateTime    @default(now()) @map("created_at")
-  updatedAt  DateTime    @updatedAt @map("updated_at")
-  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
-  cartItems  CartItem[]
-  orderItems OrderItem[]
+  id           String                 @id @default(cuid())
+  productId    String                 @map("product_id")
+  sku          String                 @unique
+  label        String
+  price        Decimal                @db.Decimal(12, 2)
+  stock        Int                    @default(0)
+  lowStock     Boolean                @default(true) @map("low_stock")
+  version      Int                    @default(0)
+  isActive     Boolean                @default(true) @map("is_active")
+  createdAt    DateTime               @default(now()) @map("created_at")
+  updatedAt    DateTime               @updatedAt @map("updated_at")
+  product      Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cartItems    CartItem[]
+  orderItems   OrderItem[]
+  reservations InventoryReservation[]
 
   @@index([productId, isActive, stock])
   @@index([price, stock])
@@ -313,6 +361,8 @@ model Order {
   cart              Cart              @relation(fields: [cartId], references: [id], onDelete: Restrict)
   deliveryAddress   Address           @relation(fields: [deliveryAddressId], references: [id], onDelete: Restrict)
   vendorOrders      VendorOrder[]
+  paymentIntents    PaymentIntent[]
+  couponRedemption  CouponRedemption?
 
   @@index([customerId, createdAt])
   @@index([paymentStatus, createdAt])
@@ -416,4 +466,249 @@ model NotificationOutbox {
 
   @@index([status, createdAt])
   @@map("notification_outbox")
+}
+
+model AuthSession {
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id")
+  refreshTokenHash String    @unique @map("refresh_token_hash")
+  familyId         String    @map("family_id")
+  expiresAt        DateTime  @map("expires_at")
+  revokedAt        DateTime? @map("revoked_at")
+  replacedById     String?   @map("replaced_by_id")
+  userAgent        String?   @map("user_agent")
+  ipAddress        String?   @map("ip_address")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@map("auth_sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model EmailOutbox {
+  id          String             @id @default(cuid())
+  recipient   String
+  subject     String
+  template    String
+  payload     Json
+  status      NotificationStatus @default(PENDING)
+  attempts    Int                @default(0)
+  lastError   String?            @map("last_error")
+  processedAt DateTime?          @map("processed_at")
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@map("email_outbox")
+}
+
+model WishlistItem {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  productId String   @map("product_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+  @@map("wishlist_items")
+}
+
+model Coupon {
+  id            String             @id @default(cuid())
+  code          String             @unique
+  percent       Decimal            @db.Decimal(5, 4)
+  maxDiscount   Decimal            @map("max_discount") @db.Decimal(12, 2)
+  minOrderValue Decimal            @default(0) @map("min_order_value") @db.Decimal(12, 2)
+  startsAt      DateTime           @map("starts_at")
+  expiresAt     DateTime           @map("expires_at")
+  usageLimit    Int?               @map("usage_limit")
+  perUserLimit  Int                @default(1) @map("per_user_limit")
+  usedCount     Int                @default(0) @map("used_count")
+  isActive      Boolean            @default(true) @map("is_active")
+  createdAt     DateTime           @default(now()) @map("created_at")
+  redemptions   CouponRedemption[]
+
+  @@index([isActive, startsAt, expiresAt])
+  @@map("coupons")
+}
+
+model CouponRedemption {
+  id             String   @id @default(cuid())
+  couponId       String   @map("coupon_id")
+  userId         String   @map("user_id")
+  orderId        String   @unique @map("order_id")
+  discountAmount Decimal  @map("discount_amount") @db.Decimal(12, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+  coupon         Coupon   @relation(fields: [couponId], references: [id], onDelete: Restrict)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([couponId, userId])
+  @@map("coupon_redemptions")
+}
+
+model PaymentIntent {
+  id             String                 @id @default(cuid())
+  orderId        String                 @map("order_id")
+  idempotencyKey String                 @unique @map("idempotency_key")
+  method         PaymentMethod
+  status         PaymentIntentStatus    @default(CREATED)
+  amount         Decimal                @db.Decimal(14, 2)
+  providerRef    String?                @unique @map("provider_ref")
+  failureCode    String?                @map("failure_code")
+  expiresAt      DateTime               @map("expires_at")
+  createdAt      DateTime               @default(now()) @map("created_at")
+  updatedAt      DateTime               @updatedAt @map("updated_at")
+  order          Order                  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  events         PaymentEvent[]
+  reservations   InventoryReservation[]
+
+  @@index([orderId, status])
+  @@map("payment_intents")
+}
+
+model PaymentEvent {
+  id              String              @id @default(cuid())
+  paymentIntentId String              @map("payment_intent_id")
+  eventKey        String              @unique @map("event_key")
+  status          PaymentIntentStatus
+  payload         Json
+  createdAt       DateTime            @default(now()) @map("created_at")
+  paymentIntent   PaymentIntent       @relation(fields: [paymentIntentId], references: [id], onDelete: Cascade)
+
+  @@map("payment_events")
+}
+
+model InventoryReservation {
+  id              String            @id @default(cuid())
+  paymentIntentId String            @map("payment_intent_id")
+  variantId       String            @map("variant_id")
+  quantity        Int
+  status          ReservationStatus @default(ACTIVE)
+  expiresAt       DateTime          @map("expires_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  paymentIntent   PaymentIntent     @relation(fields: [paymentIntentId], references: [id], onDelete: Cascade)
+  variant         ProductVariant    @relation(fields: [variantId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentIntentId, variantId])
+  @@index([status, expiresAt])
+  @@map("inventory_reservations")
+}
+
+model VendorApplication {
+  id                    String            @id @default(cuid())
+  ownerUserId           String?           @map("owner_user_id")
+  idempotencyKey        String            @unique @map("idempotency_key")
+  ownerName             String            @map("owner_name")
+  collectiveName        String            @map("collective_name")
+  email                 String
+  mobile                String
+  district              JharkhandDistrict
+  category              String
+  msmeNumber            String            @unique @map("msme_number")
+  phoneVerified         Boolean           @default(false) @map("phone_verified")
+  aadhaarVerified       Boolean           @default(false) @map("aadhaar_verified")
+  accountHolderName     String            @map("account_holder_name")
+  bankLastFour          String            @map("bank_last_four")
+  ifsc                  String
+  verificationReference String?           @map("verification_reference")
+  story                 String
+  status                ModerationStatus  @default(PENDING)
+  decisionReason        String?           @map("decision_reason")
+  decidedAt             DateTime?         @map("decided_at")
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
+  owner                 User?             @relation("ApplicationOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  documents             KycDocumentMeta[]
+  audits                ModerationAudit[]
+
+  @@index([status, createdAt])
+  @@map("vendor_applications")
+}
+
+model KycDocumentMeta {
+  id            String            @id @default(cuid())
+  applicationId String            @map("application_id")
+  category      String
+  objectKey     String            @map("object_key")
+  fileName      String            @map("file_name")
+  mimeType      String            @map("mime_type")
+  size          Int
+  createdAt     DateTime          @default(now()) @map("created_at")
+  application   VendorApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("kyc_document_meta")
+}
+
+model ModerationAudit {
+  id            String            @id @default(cuid())
+  applicationId String            @map("application_id")
+  moderatorId   String            @map("moderator_id")
+  status        ModerationStatus
+  reason        String?
+  createdAt     DateTime          @default(now()) @map("created_at")
+  application   VendorApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  moderator     User              @relation("Moderator", fields: [moderatorId], references: [id], onDelete: Restrict)
+
+  @@index([applicationId, createdAt])
+  @@map("moderation_audits")
+}
+
+model PayoutRequest {
+  id          String              @id @default(cuid())
+  vendorId    String              @map("vendor_id")
+  amount      Decimal             @db.Decimal(14, 2)
+  status      PayoutRequestStatus @default(PENDING)
+  reference   String              @unique
+  requestedAt DateTime            @default(now()) @map("requested_at")
+  processedAt DateTime?           @map("processed_at")
+  vendor      Vendor              @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  @@index([vendorId, status])
+  @@map("payout_requests")
+}
+
+model ManagedHaatOverride {
+  id         String     @id @default(cuid())
+  haatId     String     @map("haat_id")
+  liveFrom   DateTime   @map("live_from")
+  liveUntil  DateTime   @map("live_until")
+  enabled    Boolean    @default(true)
+  createdAt  DateTime   @default(now()) @map("created_at")
+  haat       WeeklyHaat @relation(fields: [haatId], references: [id], onDelete: Cascade)
+  category   Category?  @relation(fields: [categoryId], references: [id])
+  categoryId String?
+
+  @@index([liveFrom, liveUntil, enabled])
+  @@map("managed_haat_overrides")
+}
+
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  actorId    String   @map("actor_id")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  requestId  String?  @map("request_id")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+  actor      User     @relation("AdminActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId, createdAt])
+  @@map("admin_audit_logs")
 }

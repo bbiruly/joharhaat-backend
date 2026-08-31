@@ -50,6 +50,17 @@ Use `prisma db push` only for disposable development databases. It is intentiona
 - `GET /api/v1/products/search` — public filtered search.
 - `GET /api/v1/health/live` — process liveness.
 - `GET /api/v1/health/ready` — database readiness.
+- `/api/v1/auth/*` — registration, login, rotating refresh, logout and password recovery.
+- `/api/v1/me`, `/addresses`, `/cart`, `/wishlist`, `/orders` — customer account and commerce resources.
+- `/api/v1/categories`, `/districts`, `/haats`, `/products/:id` — public catalog discovery.
+- `/api/v1/payments/*` — mock payment intent, confirmation and signed webhook lifecycle.
+- `/api/v1/vendor/*` and `/api/v1/vendor-applications` — verified vendor operations and public KYC onboarding.
+- `/api/v1/admin/*` — analytics, Haat operations, abandoned-cart actions and vendor moderation.
+- `/api/docs` and `/api/openapi.json` — interactive and machine-readable API documentation.
+
+Seeded development accounts use password `JoharHaat123`: `asha@example.test`, `vendor@example.test`, and `admin@example.test`. These credentials are demo-only and must never be used in production.
+
+Sensitive KYC policy: raw Aadhaar numbers, Aadhaar files and complete bank account numbers are not accepted or persisted. Vendor applications retain verification state/reference, IFSC, account-holder name and bank last four only.
 
 JWTs must contain `sub` and a `role` claim (`CUSTOMER`, `VENDOR`, `ADMIN`, or `SYSTEM`) and match the configured issuer and audience. Login/token issuance, payment capture, real courier integrations and real SMS delivery are intentionally outside this transactional core.
 
