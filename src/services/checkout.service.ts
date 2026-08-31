@@ -32,6 +32,10 @@ export function calculateCheckoutTotals(gmv: Prisma.Decimal, discount: Prisma.De
   return { gmv: money(gmv), discount: money(discount), taxable, cgst, sgst, courier: money(courier), total: money(taxable.plus(cgst).plus(sgst).plus(courier)) };
 }
 
+export function calculateCourierCharge(gmv: Prisma.Decimal) {
+  return gmv.greaterThanOrEqualTo(1500) ? money(0) : money(79);
+}
+
 function isRetryable(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
 }
@@ -101,7 +105,8 @@ export async function processCheckout(customerId: string, idempotencyKey: string
       if (userUses >= coupon.perUserLimit) throw new ApiError(409, 'Coupon usage limit has been reached.', 'COUPON_LIMIT_REACHED');
       discount = money(Prisma.Decimal.min(gmv.mul(coupon.percent), coupon.maxDiscount));
     }
-    const totals = calculateCheckoutTotals(gmv, discount, money(input.courierCharge));
+    const courierCharge = calculateCourierCharge(gmv);
+    const totals = calculateCheckoutTotals(gmv, discount, courierCharge);
     const groupedLines = new Map<string, typeof lines>();
     for (const line of lines) {
       const vendorId = line.variant.product.vendorId;

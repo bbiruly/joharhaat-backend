@@ -7,11 +7,27 @@ import { ApiError } from '../utils/api-error.js';
 export async function createIntent(userId: string, orderId: string, method: PaymentMethod, idempotencyKey: string) {
   const existing = await prisma.paymentIntent.findUnique({ where: { idempotencyKey } });
   if (existing) return existing;
-  const order = await prisma.order.findFirst({ where: { id: orderId, customerId: userId } });
-  if (!order) throw new ApiError(404, 'Order was not found.', 'ORDER_NOT_FOUND');
-  if (method === PaymentMethod.COD && order.totalPayable.greaterThan(5000)) throw new ApiError(422, 'COD is available only for orders up to ₹5,000.', 'COD_INELIGIBLE');
-  const items = await prisma.orderItem.findMany({ where: { vendorOrder: { orderId } } });
-  return prisma.paymentIntent.create({ data: { orderId, idempotencyKey, method, amount: order.totalPayable, expiresAt: new Date(Date.now() + 15 * 60_000), providerRef: `MOCK-${randomUUID()}`, reservations: { create: items.map((item) => ({ variantId: item.variantId, quantity: item.quantity, expiresAt: new Date(Date.now() + 15 * 60_000) })) } } });
+  return prisma.$transaction(async (tx) => {
+    const replay = await tx.paymentIntent.findUnique({ where: { idempotencyKey } });
+    if (replay) return replay;
+    const order = await tx.order.findFirst({ where: { id: orderId, customerId: userId } });
+    if (!order) throw new ApiError(404, 'Order was not found.', 'ORDER_NOT_FOUND');
+    if (order.paymentStatus === PaymentStatus.PAID) throw new ApiError(409, 'This order is already paid.', 'ORDER_ALREADY_PAID');
+    if (method === PaymentMethod.COD && order.totalPayable.greaterThan(5000)) throw new ApiError(422, 'COD is available only for orders up to ₹5,000.', 'COD_INELIGIBLE');
+    const [items, previousTerminalIntent] = await Promise.all([
+      tx.orderItem.findMany({ where: { vendorOrder: { orderId } } }),
+      tx.paymentIntent.findFirst({ where: { orderId, status: { in: [PaymentIntentStatus.FAILED, PaymentIntentStatus.CANCELLED, PaymentIntentStatus.EXPIRED] } }, orderBy: { createdAt: 'desc' } }),
+    ]);
+    if (previousTerminalIntent) {
+      for (const item of items) {
+        const reserved = await tx.productVariant.updateMany({ where: { id: item.variantId, isActive: true, stock: { gte: item.quantity } }, data: { stock: { decrement: item.quantity }, version: { increment: 1 } } });
+        if (!reserved.count) throw new ApiError(409, `${item.productName} no longer has enough stock for payment retry.`, 'INSUFFICIENT_STOCK');
+        const variant = await tx.productVariant.findUniqueOrThrow({ where: { id: item.variantId } });
+        await tx.productVariant.update({ where: { id: item.variantId }, data: { lowStock: variant.stock < env.LOW_STOCK_THRESHOLD } });
+      }
+    }
+    return tx.paymentIntent.create({ data: { orderId, idempotencyKey, method, amount: order.totalPayable, expiresAt: new Date(Date.now() + 15 * 60_000), providerRef: `MOCK-${randomUUID()}`, reservations: { create: items.map((item) => ({ variantId: item.variantId, quantity: item.quantity, expiresAt: new Date(Date.now() + 15 * 60_000) })) } } });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
 export async function transitionIntent(userId: string, intentId: string, status: PaymentIntentStatus, eventKey = randomUUID()) {
