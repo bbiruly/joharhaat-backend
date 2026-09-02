@@ -36,6 +36,32 @@ export function calculateCourierCharge(gmv: Prisma.Decimal) {
   return gmv.greaterThanOrEqualTo(1500) ? money(0) : money(79);
 }
 
+async function resolveCoupon(tx: Prisma.TransactionClient, customerId: string, code: string | undefined, gmv: Prisma.Decimal) {
+  if (!code) return { coupon: null, discount: money(0) };
+  const coupon = await tx.coupon.findUnique({ where: { code } });
+  const now = new Date();
+  if (!coupon || !coupon.isActive || coupon.startsAt > now || coupon.expiresAt <= now || (coupon.usageLimit !== null && coupon.usedCount >= coupon.usageLimit) || gmv.lessThan(coupon.minOrderValue)) throw new ApiError(422, 'Coupon is invalid, expired or not applicable.', 'COUPON_NOT_APPLICABLE');
+  const userUses = await tx.couponRedemption.count({ where: { couponId: coupon.id, userId: customerId } });
+  if (userUses >= coupon.perUserLimit) throw new ApiError(409, 'Coupon usage limit has been reached.', 'COUPON_LIMIT_REACHED');
+  return { coupon, discount: money(Prisma.Decimal.min(gmv.mul(coupon.percent), coupon.maxDiscount)) };
+}
+
+export async function quoteCheckout(customerId: string, couponCode?: string) {
+  return prisma.$transaction(async (tx) => {
+    const cart = await tx.cart.findFirst({ where: { customerId, order: null }, include: { items: { include: { variant: { include: { product: { include: { vendor: true } } } } } } }, orderBy: { updatedAt: 'desc' } });
+    if (!cart || !cart.items.length) throw new ApiError(422, 'Your cart is empty.', 'EMPTY_CART');
+    const items = cart.items.map((item) => {
+      const { variant } = item;
+      if (!variant.isActive || !variant.product.isPublished || variant.product.vendor.verificationStatus !== VerificationStatus.VERIFIED || variant.stock < item.quantity) throw new ApiError(409, `${variant.product.name} is unavailable or has insufficient stock.`, 'CART_CHANGED');
+      return { cartItemId: item.id, productId: variant.productId, variantId: variant.id, productName: variant.product.name, variantLabel: variant.label, vendorName: variant.product.vendor.businessName, quantity: item.quantity, stock: variant.stock, unitPrice: money(variant.price), lineTotal: money(variant.price.mul(item.quantity)) };
+    });
+    const gmv = sumMoney(items.map((item) => item.lineTotal));
+    const { coupon, discount } = await resolveCoupon(tx, customerId, couponCode, gmv);
+    const totals = calculateCheckoutTotals(gmv, discount, calculateCourierCharge(gmv));
+    return { cartId: cart.id, items, coupon: coupon ? { code: coupon.code, discount } : null, totals: { grossValue: totals.gmv, discount: totals.discount, deliveryFee: totals.courier, cgst: totals.cgst, sgst: totals.sgst, finalTotal: totals.total }, codEligible: totals.total.lessThanOrEqualTo(5000) };
+  });
+}
+
 function isRetryable(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
 }
@@ -72,10 +98,8 @@ export async function processCheckout(customerId: string, idempotencyKey: string
     if (cart.order) throw new ApiError(409, 'This cart has already been checked out.', 'CART_ALREADY_CONVERTED');
     if (!address) throw new ApiError(404, 'Delivery address was not found for this customer.', 'ADDRESS_NOT_FOUND');
 
-    const requested = new Map(input.items.map((item) => [item.variantId, item.quantity]));
-    if (cart.items.length !== requested.size || cart.items.some((item) => requested.get(item.variantId) !== item.quantity)) {
-      throw new ApiError(409, 'Requested items do not match the current cart. Refresh the cart and retry.', 'CART_CHANGED');
-    }
+    if (!cart.items.length) throw new ApiError(422, 'Your cart is empty.', 'EMPTY_CART');
+    const requested = new Map(cart.items.map((item) => [item.variantId, item.quantity]));
 
     const variantIds = [...requested.keys()].sort();
     await tx.$queryRaw(Prisma.sql`SELECT id FROM product_variants WHERE id IN (${Prisma.join(variantIds)}) ORDER BY id FOR UPDATE`);
@@ -95,16 +119,7 @@ export async function processCheckout(customerId: string, idempotencyKey: string
     });
 
     const gmv = sumMoney(lines.map((line) => line.lineTotal));
-    let coupon: Prisma.CouponGetPayload<object> | null = null;
-    let discount = money(input.discountAmount);
-    if (input.couponCode) {
-      coupon = await tx.coupon.findUnique({ where: { code: input.couponCode } });
-      const now = new Date();
-      if (!coupon || !coupon.isActive || coupon.startsAt > now || coupon.expiresAt <= now || (coupon.usageLimit !== null && coupon.usedCount >= coupon.usageLimit) || gmv.lessThan(coupon.minOrderValue)) throw new ApiError(422, 'Coupon is invalid, expired or not applicable.', 'COUPON_NOT_APPLICABLE');
-      const userUses = await tx.couponRedemption.count({ where: { couponId: coupon.id, userId: customerId } });
-      if (userUses >= coupon.perUserLimit) throw new ApiError(409, 'Coupon usage limit has been reached.', 'COUPON_LIMIT_REACHED');
-      discount = money(Prisma.Decimal.min(gmv.mul(coupon.percent), coupon.maxDiscount));
-    }
+    const { coupon, discount } = await resolveCoupon(tx, customerId, input.couponCode, gmv);
     const courierCharge = calculateCourierCharge(gmv);
     const totals = calculateCheckoutTotals(gmv, discount, courierCharge);
     const groupedLines = new Map<string, typeof lines>();
@@ -132,6 +147,7 @@ export async function processCheckout(customerId: string, idempotencyKey: string
         sgst: totals.sgst,
         courierCharge: totals.courier,
         totalPayable: totals.total,
+        couponCode: coupon?.code ?? null,
         recipientName: address.fullName,
         recipientMobile: address.mobile,
         addressLine1: address.line1,
@@ -142,7 +158,6 @@ export async function processCheckout(customerId: string, idempotencyKey: string
     });
     if (coupon) {
       await tx.couponRedemption.create({ data: { couponId: coupon.id, userId: customerId, orderId: order.id, discountAmount: totals.discount } });
-      await tx.coupon.update({ where: { id: coupon.id }, data: { usedCount: { increment: 1 } } });
     }
 
     const outboxIds: string[] = [];

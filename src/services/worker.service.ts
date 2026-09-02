@@ -1,6 +1,8 @@
 import { prisma } from '../db/prisma.js';
 import { expireReservations } from './payment.service.js';
 import { dispatchVendorSmsOutbox } from './sms.service.js';
+import { aggregateAnalytics } from './advanced-analytics.service.js';
+let lastAnalyticsRun = 0;
 
 export async function runBackgroundCycle(): Promise<void> {
   await expireReservations();
@@ -11,4 +13,5 @@ export async function runBackgroundCycle(): Promise<void> {
     console.info({ outboxId: email.id, recipient: email.recipient, template: email.template }, 'Mock email dispatched');
     await prisma.emailOutbox.update({ where: { id: email.id }, data: { status: 'SENT', attempts: { increment: 1 }, processedAt: new Date(), lastError: null } });
   }
+  if (Date.now() - lastAnalyticsRun > 15 * 60_000) { lastAnalyticsRun = Date.now(); await aggregateAnalytics(); }
 }

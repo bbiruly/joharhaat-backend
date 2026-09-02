@@ -1,5 +1,5 @@
 import type { RequestHandler } from 'express';
-import { ModerationStatus } from '../generated/prisma/client.js';
+import { AdminTeamRole, FulfillmentStatus, ModerationStatus } from '../generated/prisma/client.js';
 import * as admin from '../services/admin.service.js';
 
 export const analytics: RequestHandler = async (req, res) => res.json({ data: await admin.analytics(Number(req.query.months ?? 6)) });
@@ -11,3 +11,15 @@ export const abandonedCarts: RequestHandler = async (_req, res) => res.json({ da
 export const reminderOpened: RequestHandler = async (req, res) => res.json({ data: await admin.reminderOpened(String(req.params.id)) });
 export const applications: RequestHandler = async (_req, res) => res.json({ data: await admin.applications() });
 export const moderate: RequestHandler = async (req, res) => res.json({ data: await admin.moderate(req.auth!.userId, req.requestId, String(req.params.id), req.body.status as ModerationStatus, req.body.reason) });
+export const productsForModeration: RequestHandler = async (_req, res) => res.json({ data: await admin.productsForModeration() });
+export const moderateProduct: RequestHandler = async (req, res) => res.json({ data: await admin.moderateProduct(req.auth!.userId, req.requestId, String(req.params.id), req.body.decision, req.body.reason) });
+export const access: RequestHandler = async (req,res)=>res.json({data:await admin.adminAccess(req.auth!.userId)});
+export const overview: RequestHandler = async (req,res)=>res.json({data:await admin.overview(req.auth!.userId)});
+export const orders: RequestHandler = async (req,res)=>res.json({data:await admin.adminOrders(req.auth!.userId,req.query)});
+export const correctOrderStatus: RequestHandler = async (req,res)=>res.json({data:await admin.correctOrderStatus(req.auth!.userId,req.requestId,String(req.params.id),req.body.status as FulfillmentStatus,req.body.reason)});
+export const payouts: RequestHandler = async (req,res)=>res.json({data:await admin.payouts(req.auth!.userId)});
+export const notifications: RequestHandler = async (req,res)=>res.json({data:await admin.notifications(req.auth!.userId)});
+export const markNotification: RequestHandler = async (req,res)=>res.json({data:await admin.markNotification(req.auth!.userId,String(req.params.id))});
+export const markAllNotifications: RequestHandler = async (req,res)=>res.json({data:await admin.markAllNotifications(req.auth!.userId)});
+export const team: RequestHandler = async (req,res)=>res.json({data:await admin.team(req.auth!.userId)});
+export const updateTeamMember: RequestHandler = async (req,res)=>res.json({data:await admin.updateTeamMember(req.auth!.userId,String(req.params.id),{...req.body,role:req.body.role as AdminTeamRole|undefined})});

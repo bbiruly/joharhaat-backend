@@ -3,7 +3,7 @@ import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 
 const safeUser = { id: true, name: true, email: true, mobile: true, role: true, createdAt: true } as const;
-const cartInclude = { items: { include: { variant: { include: { product: { include: { vendor: { select: { businessName: true, verificationStatus: true } }, category: true } } } } } } } satisfies Prisma.CartInclude;
+const cartInclude = { items: { include: { variant: { include: { product: { include: { variants: { where: { isActive: true } }, vendor: { select: { businessName: true, verificationStatus: true } }, category: true } } } } } } } satisfies Prisma.CartInclude;
 
 export const getProfile = (userId: string) => prisma.user.findUniqueOrThrow({ where: { id: userId }, select: safeUser });
 export async function updateProfile(userId: string, data: { name: string; email: string; mobile: string }) { return prisma.user.update({ where: { id: userId }, data, select: safeUser }); }
@@ -34,11 +34,15 @@ export async function addCartItem(userId: string, variantId: string, quantity: n
   if (!variant || !variant.isActive || !variant.product.isPublished || variant.product.vendor.verificationStatus !== VerificationStatus.VERIFIED) throw new ApiError(422, 'Product variant is unavailable.', 'VARIANT_UNAVAILABLE');
   if (variant.stock < quantity) throw new ApiError(409, `Only ${variant.stock} item(s) are available.`, 'INSUFFICIENT_STOCK');
   const cart = await activeCart(userId);
-  await prisma.cartItem.upsert({ where: { cartId_variantId: { cartId: cart.id, variantId } }, create: { cartId: cart.id, variantId, quantity }, update: { quantity } });
+  const existing = cart.items.find((item) => item.variantId === variantId);
+  const nextQuantity = (existing?.quantity ?? 0) + quantity;
+  if (variant.stock < nextQuantity) throw new ApiError(409, `Your cart already has ${existing?.quantity ?? 0}. Only ${variant.stock} item(s) are available.`, 'INSUFFICIENT_STOCK');
+  await prisma.cartItem.upsert({ where: { cartId_variantId: { cartId: cart.id, variantId } }, create: { cartId: cart.id, variantId, quantity }, update: { quantity: nextQuantity } });
   return prisma.cart.update({ where: { id: cart.id }, data: { abandonmentStatus: CartAbandonmentStatus.ACTIVE }, include: cartInclude });
 }
 export async function updateCartItem(userId: string, itemId: string, quantity: number) { const item = await prisma.cartItem.findFirst({ where: { id: itemId, cart: { customerId: userId, order: null } }, include: { variant: true } }); if (!item) throw new ApiError(404, 'Cart item was not found.', 'CART_ITEM_NOT_FOUND'); if (item.variant.stock < quantity) throw new ApiError(409, `Only ${item.variant.stock} item(s) are available.`, 'INSUFFICIENT_STOCK'); await prisma.cartItem.update({ where: { id: itemId }, data: { quantity } }); return activeCart(userId); }
 export async function removeCartItem(userId: string, itemId: string) { const deleted = await prisma.cartItem.deleteMany({ where: { id: itemId, cart: { customerId: userId, order: null } } }); if (!deleted.count) throw new ApiError(404, 'Cart item was not found.', 'CART_ITEM_NOT_FOUND'); return activeCart(userId); }
+export async function clearCart(userId: string) { const cart = await activeCart(userId); await prisma.cartItem.deleteMany({ where: { cartId: cart.id } }); return activeCart(userId); }
 
 export const listWishlist = (userId: string) => prisma.wishlistItem.findMany({ where: { userId }, include: { product: { include: { variants: { where: { isActive: true } }, vendor: { select: { businessName: true } }, category: true } } }, orderBy: { createdAt: 'desc' } });
 export async function toggleWishlist(userId: string, productId: string) { if (!(await prisma.product.findFirst({ where: { id: productId, isPublished: true } }))) throw new ApiError(404, 'Product was not found.', 'PRODUCT_NOT_FOUND'); const existing = await prisma.wishlistItem.findUnique({ where: { userId_productId: { userId, productId } } }); if (existing) { await prisma.wishlistItem.delete({ where: { id: existing.id } }); return { wishlisted: false }; } await prisma.wishlistItem.create({ data: { userId, productId } }); return { wishlisted: true }; }

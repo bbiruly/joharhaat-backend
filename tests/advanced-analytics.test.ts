@@ -1,0 +1,2 @@
+import {describe,expect,it} from 'vitest';import {normalizeQuery} from '../src/services/advanced-analytics.service.js';
+describe('advanced analytics',()=>{it('groups Hindi marketplace aliases',()=>{expect(normalizeQuery(' महुआ ')).toBe('mahua');expect(normalizeQuery('सोहराय')).toBe('sohrai')});it('normalizes spacing and casing',()=>{expect(normalizeQuery('  Wild   Honey ')).toBe('wild honey')})});

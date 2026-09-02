@@ -1,6 +1,29 @@
-import { ModerationStatus, Prisma, UserRole, VerificationStatus } from '../generated/prisma/client.js';
+import { AdminTeamRole, FulfillmentStatus, ModerationStatus, Prisma, ProductLifecycleStatus, UserRole, VerificationStatus } from '../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
+
+export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'team:manage';
+const rolePermissions: Record<AdminTeamRole, AdminPermission[]> = {
+  SUPER_ADMIN: ['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','team:manage'],
+  OPERATIONS: ['analytics:read','orders:manage','haats:manage'], FINANCE: ['analytics:read','analytics:export','payouts:manage'], MARKETING: ['analytics:read','marketing:manage'], MODERATOR: ['moderation:manage'],
+};
+export async function adminAccess(userId: string, permission?: AdminPermission) { const membership = await prisma.adminMembership.findUnique({ where: { userId } }); const role = membership?.role ?? AdminTeamRole.SUPER_ADMIN; if (membership && !membership.isActive) throw new ApiError(403,'Admin access is disabled.','ADMIN_DISABLED'); if (permission && !rolePermissions[role].includes(permission)) throw new ApiError(403,'Your admin role does not allow this action.','ADMIN_PERMISSION_DENIED'); return { role, permissions: rolePermissions[role] }; }
+
+export async function overview(userId: string) {
+  await adminAccess(userId,'analytics:read'); const now=new Date(); const since=new Date(now.getTime()-30*86400000);
+  const [orders,pendingKyc,pendingProducts,lowStock,pendingPayouts,expiringHaats]=await Promise.all([
+    prisma.order.findMany({where:{createdAt:{gte:since}},include:{vendorOrders:true}}), prisma.vendorApplication.count({where:{status:'PENDING'}}), prisma.product.count({where:{lifecycleStatus:'PENDING_REVIEW'}}), prisma.productVariant.count({where:{stock:{lt:5},isActive:true}}), prisma.payoutRequest.count({where:{status:{in:['PENDING','PROCESSING']}}}), prisma.managedHaatOverride.count({where:{enabled:true,liveUntil:{gt:now,lte:new Date(now.getTime()+86400000)}}})]);
+  const vendorOrders=orders.flatMap(o=>o.vendorOrders); const gmv=orders.reduce((s,o)=>s.plus(o.gmv),new Prisma.Decimal(0)); const commission=vendorOrders.reduce((s,o)=>s.plus(o.adminCommission),new Prisma.Decimal(0)); const payoutLiability=vendorOrders.filter(o=>o.payoutStatus!=='RELEASED').reduce((s,o)=>s.plus(o.netVendorPayout),new Prisma.Decimal(0));
+  return { snapshotAt:now, periodDays:30, metrics:{gmv,orders:orders.length,averageOrderValue:orders.length?gmv.div(orders.length):new Prisma.Decimal(0),commission,payoutLiability,deliverySuccessRate:vendorOrders.length?vendorOrders.filter(o=>o.status==='DELIVERED').length/vendorOrders.length*100:0,rtoOrders:vendorOrders.filter(o=>o.status==='RTO').length}, attention:{pendingKyc,pendingProducts,lowStock,pendingPayouts,expiringHaats,delayedOrders:vendorOrders.filter(o=>o.status==='PENDING'&&now.getTime()-o.createdAt.getTime()>86400000).length,failedPayments:orders.filter(o=>o.paymentStatus==='FAILED').length} };
+}
+export async function adminOrders(userId:string, query:any){await adminAccess(userId,'orders:manage'); const page=Math.max(1,Number(query.page)||1),pageSize=Math.min(100,Math.max(1,Number(query.pageSize)||20)); const where:Prisma.OrderWhereInput={...(query.paymentStatus?{paymentStatus:query.paymentStatus}:{}),...(query.q?{OR:[{orderNumber:{contains:query.q,mode:'insensitive'}},{recipientName:{contains:query.q,mode:'insensitive'}}]}:{})}; const [items,total]=await prisma.$transaction([prisma.order.findMany({where,include:{vendorOrders:{include:{vendor:true,items:true,statusLogs:{orderBy:{createdAt:'asc'}}}},paymentIntents:{orderBy:{createdAt:'desc'},take:1}},orderBy:{createdAt:'desc'},skip:(page-1)*pageSize,take:pageSize}),prisma.order.count({where})]);return{items,page,pageSize,total,totalPages:Math.ceil(total/pageSize)};}
+export async function correctOrderStatus(userId:string,requestId:string|undefined,id:string,status:FulfillmentStatus,reason:string){await adminAccess(userId,'orders:manage');if(!reason.trim())throw new ApiError(422,'A correction reason is required.','REASON_REQUIRED');return prisma.$transaction(async tx=>{const item=await tx.vendorOrder.findUnique({where:{id}});if(!item)throw new ApiError(404,'Vendor order was not found.','ORDER_NOT_FOUND');const updated=await tx.vendorOrder.update({where:{id},data:{status,statusLogs:{create:{status,actorUserId:userId,note:`Admin correction: ${reason}`}}}});await tx.adminActionReason.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,reason}});await tx.adminAuditLog.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,requestId:requestId??null,permission:'orders:manage',previousState:{status:item.status},nextState:{status}}});return updated;});}
+export async function payouts(userId:string){await adminAccess(userId,'payouts:manage');return Promise.all([prisma.vendorOrder.findMany({where:{status:'DELIVERED'},include:{vendor:true,walletLedgers:true},orderBy:{deliveredAt:'desc'}}),prisma.payoutRequest.findMany({include:{vendor:true},orderBy:{requestedAt:'desc'}}),prisma.walletLedger.findMany({include:{vendor:true,vendorOrder:true},orderBy:{createdAt:'desc'},take:100})]).then(([eligible,requests,ledgers])=>({eligible,requests,ledgers}));}
+export async function notifications(userId:string){await adminAccess(userId);return prisma.adminNotification.findMany({where:{OR:[{expiresAt:null},{expiresAt:{gt:new Date()}}]},include:{reads:{where:{userId}}},orderBy:{createdAt:'desc'},take:100});}
+export async function markNotification(userId:string,id:string){await adminAccess(userId);return prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:id,userId}},update:{readAt:new Date()},create:{notificationId:id,userId}});}
+export async function markAllNotifications(userId:string){await adminAccess(userId);const all=await prisma.adminNotification.findMany({select:{id:true}});await prisma.$transaction(all.map(n=>prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:n.id,userId}},update:{readAt:new Date()},create:{notificationId:n.id,userId}})));return{count:all.length};}
+export async function team(userId:string){await adminAccess(userId,'team:manage');return prisma.adminMembership.findMany({include:{user:{select:{id:true,name:true,email:true,mobile:true,isActive:true,createdAt:true}}},orderBy:{createdAt:'asc'}});}
+export async function updateTeamMember(userId:string,id:string,input:{role?:AdminTeamRole;isActive?:boolean}){await adminAccess(userId,'team:manage');const member=await prisma.adminMembership.findUnique({where:{id}});if(!member)throw new ApiError(404,'Admin member was not found.','ADMIN_MEMBER_NOT_FOUND');if(member.userId===userId&&input.isActive===false)throw new ApiError(409,'You cannot disable your own admin access.','SELF_DISABLE_FORBIDDEN');return prisma.adminMembership.update({where:{id},data:input});}
 
 export async function analytics(months: number) { const since = new Date(); since.setMonth(since.getMonth() - months); const [orders, carts, customers] = await Promise.all([prisma.order.findMany({ where: { createdAt: { gte: since } }, include: { vendorOrders: { include: { vendor: true } } } }), prisma.cart.findMany({ where: { createdAt: { gte: since } } }), prisma.user.count({ where: { role: UserRole.CUSTOMER, createdAt: { gte: since } } })]); const gmv = orders.reduce((sum, order) => sum.plus(order.gmv), new Prisma.Decimal(0)); const revenue = orders.flatMap((order) => order.vendorOrders).reduce((sum, order) => sum.plus(order.adminCommission), new Prisma.Decimal(0)); const monthly = new Map<string, { month: string; gmv: Prisma.Decimal; revenue: Prisma.Decimal; orders: number }>(); for (const order of orders) { const key = order.createdAt.toISOString().slice(0, 7); const point = monthly.get(key) ?? { month: key, gmv: new Prisma.Decimal(0), revenue: new Prisma.Decimal(0), orders: 0 }; point.gmv = point.gmv.plus(order.gmv); point.revenue = point.revenue.plus(order.vendorOrders.reduce((sum, vendorOrder) => sum.plus(vendorOrder.adminCommission), new Prisma.Decimal(0))); point.orders += 1; monthly.set(key, point); } const haats = new Map<string, { name: string; district: string; gmv: Prisma.Decimal; orders: number }>(); for (const order of orders.flatMap((item) => item.vendorOrders)) { const key = order.vendor.district; const point = haats.get(key) ?? { name: `${key.replaceAll('_', ' ')} Haat`, district: key, gmv: new Prisma.Decimal(0), orders: 0 }; point.gmv = point.gmv.plus(order.gmv); point.orders += 1; haats.set(key, point); } return { gmv, netRevenue: revenue, customerAcquisitionCost: customers ? new Prisma.Decimal(25000).div(customers).toDecimalPlaces(2) : new Prisma.Decimal(0), cartAbandonmentRate: carts.length ? (carts.filter((cart) => ['ABANDONED','REMINDER_SENT'].includes(cart.abandonmentStatus)).length / carts.length) * 100 : 0, monthly: [...monthly.values()], haats: [...haats.values()] }; }
 export const listHaats = () => prisma.weeklyHaat.findMany({ include: { overrides: true }, orderBy: [{ day: 'asc' }, { name: 'asc' }] });
@@ -18,13 +41,33 @@ export async function moderate(actorId: string, requestId: string | undefined, i
     if (application.status === status) return application;
     const updated = await tx.vendorApplication.update({ where: { id }, data: { status, decisionReason: reason ?? null, decidedAt: new Date(), audits: { create: { moderatorId: actorId, status, reason: reason ?? null } } } });
     if (status === ModerationStatus.APPROVED) {
-      let owner = application.ownerUserId ? await tx.user.findUnique({ where: { id: application.ownerUserId } }) : await tx.user.findUnique({ where: { email: application.email } });
-      owner ??= await tx.user.create({ data: { name: application.ownerName, email: application.email, mobile: application.mobile, role: UserRole.VENDOR } });
+      const owner = application.ownerUserId ? await tx.user.findUnique({ where: { id: application.ownerUserId } }) : await tx.user.findUnique({ where: { email: application.email } });
+      if (!owner?.passwordHash) throw new ApiError(409, 'Applicant must create a password-protected account before approval.', 'APPLICANT_ACCOUNT_REQUIRED');
       await tx.user.update({ where: { id: owner.id }, data: { role: UserRole.VENDOR } });
       const certificate = application.documents.find((document) => document.category === 'MSME');
       await tx.vendor.upsert({ where: { ownerId: owner.id }, update: { verificationStatus: VerificationStatus.VERIFIED }, create: { ownerId: owner.id, businessName: application.collectiveName, district: application.district, region: application.district.replaceAll('_', ' '), msmeNumber: application.msmeNumber, msmeCertificateUrl: certificate?.objectKey ?? 'metadata-unavailable', verificationStatus: VerificationStatus.VERIFIED } });
     }
     await tx.adminAuditLog.create({ data: { actorId, action: `VENDOR_${status}`, entityType: 'VendorApplication', entityId: id, requestId: requestId ?? null, metadata: reason ? { reason } : Prisma.JsonNull } });
+    return updated;
+  });
+}
+
+export const productsForModeration = () => prisma.product.findMany({
+  where: { lifecycleStatus: { in: [ProductLifecycleStatus.PENDING_REVIEW, ProductLifecycleStatus.REJECTED, ProductLifecycleStatus.SUSPENDED] } },
+  include: { vendor: { include: { owner: { select: { name: true, mobile: true } } } }, category: true, variants: true, media: { orderBy: { sortOrder: 'asc' } }, reviewer: { select: { name: true } } },
+  orderBy: [{ submittedAt: 'asc' }, { createdAt: 'asc' }],
+});
+
+export async function moderateProduct(actorId: string, requestId: string | undefined, id: string, decision: 'APPROVE' | 'REJECT' | 'SUSPEND', reason?: string) {
+  if (decision !== 'APPROVE' && !reason?.trim()) throw new ApiError(422, 'A moderation reason is required.', 'REASON_REQUIRED');
+  return prisma.$transaction(async (tx) => {
+    const product = await tx.product.findUnique({ where: { id }, include: { variants: true, media: true } });
+    if (!product) throw new ApiError(404, 'Product was not found.', 'PRODUCT_NOT_FOUND');
+    const target = decision === 'APPROVE' ? ProductLifecycleStatus.APPROVED : decision === 'REJECT' ? ProductLifecycleStatus.REJECTED : ProductLifecycleStatus.SUSPENDED;
+    if (product.lifecycleStatus === target) return product;
+    if (decision === 'APPROVE' && (!product.variants.length || !product.media.length)) throw new ApiError(422, 'A product needs at least one variant and photo before approval.', 'PRODUCT_INCOMPLETE');
+    const updated = await tx.product.update({ where: { id }, data: { lifecycleStatus: target, isPublished: decision === 'APPROVE', moderationReason: reason?.trim() || null, reviewedAt: new Date(), reviewerId: actorId } });
+    await tx.adminAuditLog.create({ data: { actorId, action: `PRODUCT_${decision}`, entityType: 'Product', entityId: id, requestId: requestId ?? null, metadata: reason ? { reason } : Prisma.JsonNull } });
     return updated;
   });
 }

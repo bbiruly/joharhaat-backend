@@ -12,6 +12,7 @@ export const cart: RequestHandler = async (req, res) => res.json({ data: await c
 export const addCartItem: RequestHandler = async (req, res) => res.status(201).json({ data: await customer.addCartItem(req.auth!.userId, req.body.variantId, req.body.quantity) });
 export const updateCartItem: RequestHandler = async (req, res) => res.json({ data: await customer.updateCartItem(req.auth!.userId, String(req.params.id), req.body.quantity) });
 export const removeCartItem: RequestHandler = async (req, res) => res.json({ data: await customer.removeCartItem(req.auth!.userId, String(req.params.id)) });
+export const clearCart: RequestHandler = async (req, res) => res.json({ data: await customer.clearCart(req.auth!.userId) });
 export const wishlist: RequestHandler = async (req, res) => res.json({ data: await customer.listWishlist(req.auth!.userId) });
 export const toggleWishlist: RequestHandler = async (req, res) => res.json({ data: await customer.toggleWishlist(req.auth!.userId, String(req.params.id)) });
 export const orders: RequestHandler = async (req, res) => res.json({ data: await customer.listOrders(req.auth!.userId) });
