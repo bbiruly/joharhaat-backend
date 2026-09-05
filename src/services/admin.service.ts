@@ -86,16 +86,38 @@ export async function notifications(userId:string){await adminAccess(userId);ret
 export async function markNotification(userId:string,id:string){await adminAccess(userId);return prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:id,userId}},update:{readAt:new Date()},create:{notificationId:id,userId}});}
 export async function markAllNotifications(userId:string){await adminAccess(userId);const all=await prisma.adminNotification.findMany({select:{id:true}});await prisma.$transaction(all.map(n=>prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:n.id,userId}},update:{readAt:new Date()},create:{notificationId:n.id,userId}})));return{count:all.length};}
 export async function team(userId:string){await adminAccess(userId,'team:manage');return prisma.adminMembership.findMany({include:{user:{select:{id:true,name:true,email:true,mobile:true,isActive:true,createdAt:true}}},orderBy:{createdAt:'asc'}});}
-export async function updateTeamMember(userId:string,id:string,input:{role?:AdminTeamRole;isActive?:boolean}){await adminAccess(userId,'team:manage');const member=await prisma.adminMembership.findUnique({where:{id}});if(!member)throw new ApiError(404,'Admin member was not found.','ADMIN_MEMBER_NOT_FOUND');if(member.userId===userId&&input.isActive===false)throw new ApiError(409,'You cannot disable your own admin access.','SELF_DISABLE_FORBIDDEN');return prisma.adminMembership.update({where:{id},data:input});}
+/**
+ * A SUPER_ADMIN may not be disabled or demoted through the API, by anyone —
+ * including another SUPER_ADMIN and including themselves. Losing every
+ * SUPER_ADMIN would leave the permission matrix unmanageable with no way back
+ * in, so that change is deliberately only possible directly in the database.
+ */
+export function assertTeamChangeAllowed(input: {
+  targetRole: AdminTeamRole;
+  targetIsSelf: boolean;
+  nextRole?: AdminTeamRole | undefined;
+  nextIsActive?: boolean | undefined;
+}) {
+  const disabling = input.nextIsActive === false;
+  const demoting = input.nextRole !== undefined && input.nextRole !== input.targetRole;
+  if (input.targetRole === AdminTeamRole.SUPER_ADMIN && (disabling || demoting))
+    throw new ApiError(422, 'A SUPER_ADMIN cannot be disabled or have their role changed from the admin panel.', 'SUPER_ADMIN_PROTECTED');
+  if (input.targetIsSelf && disabling)
+    throw new ApiError(422, 'You cannot disable your own admin access.', 'SELF_DISABLE_FORBIDDEN');
+}
 
-export async function analytics(months: number) { const since = new Date(); since.setMonth(since.getMonth() - months); const [orders, carts, customers] = await Promise.all([prisma.order.findMany({ where: { createdAt: { gte: since } }, include: { vendorOrders: { include: { vendor: true } } } }), prisma.cart.findMany({ where: { createdAt: { gte: since } } }), prisma.user.count({ where: { role: UserRole.CUSTOMER, createdAt: { gte: since } } })]); const gmv = orders.reduce((sum, order) => sum.plus(order.gmv), new Prisma.Decimal(0)); const revenue = orders.flatMap((order) => order.vendorOrders).reduce((sum, order) => sum.plus(order.adminCommission), new Prisma.Decimal(0)); const monthly = new Map<string, { month: string; gmv: Prisma.Decimal; revenue: Prisma.Decimal; orders: number }>(); for (const order of orders) { const key = order.createdAt.toISOString().slice(0, 7); const point = monthly.get(key) ?? { month: key, gmv: new Prisma.Decimal(0), revenue: new Prisma.Decimal(0), orders: 0 }; point.gmv = point.gmv.plus(order.gmv); point.revenue = point.revenue.plus(order.vendorOrders.reduce((sum, vendorOrder) => sum.plus(vendorOrder.adminCommission), new Prisma.Decimal(0))); point.orders += 1; monthly.set(key, point); } const haats = new Map<string, { name: string; district: string; gmv: Prisma.Decimal; orders: number }>(); for (const order of orders.flatMap((item) => item.vendorOrders)) { const key = order.vendor.district; const point = haats.get(key) ?? { name: `${key.replaceAll('_', ' ')} Haat`, district: key, gmv: new Prisma.Decimal(0), orders: 0 }; point.gmv = point.gmv.plus(order.gmv); point.orders += 1; haats.set(key, point); } return { gmv, netRevenue: revenue, customerAcquisitionCost: customers ? new Prisma.Decimal(25000).div(customers).toDecimalPlaces(2) : new Prisma.Decimal(0), cartAbandonmentRate: carts.length ? (carts.filter((cart) => ['ABANDONED','REMINDER_SENT'].includes(cart.abandonmentStatus)).length / carts.length) * 100 : 0, monthly: [...monthly.values()], haats: [...haats.values()] }; }
-export const listHaats = () => prisma.weeklyHaat.findMany({ include: { overrides: true }, orderBy: [{ day: 'asc' }, { name: 'asc' }] });
-export async function saveHaat(id: string | undefined, input: any) { if (input.opensAt >= input.closesAt) throw new ApiError(422, 'Closing time must be after opening time.', 'INVALID_HAAT_TIME'); return id ? prisma.weeklyHaat.update({ where: { id }, data: input }) : prisma.weeklyHaat.create({ data: input }); }
-export async function setLiveHaat(id: string, liveUntil: Date) { if (liveUntil <= new Date()) throw new ApiError(422, 'Live override must end in the future.', 'INVALID_LIVE_OVERRIDE'); return prisma.managedHaatOverride.create({ data: { haatId: id, liveFrom: new Date(), liveUntil } }); }
-export async function toggleHaat(id: string, enabled: boolean) { return prisma.weeklyHaat.update({ where: { id }, data: { isEnabled: enabled } }); }
-export const abandonedCarts = () => prisma.cart.findMany({ where: { abandonmentStatus: { in: ['ABANDONED', 'REMINDER_SENT'] } }, include: { customer: { select: { name: true, email: true, mobile: true } }, items: { include: { variant: { include: { product: true } } } } }, orderBy: { updatedAt: 'desc' } });
-export async function reminderOpened(id: string) { const cart = await prisma.cart.findUnique({ where: { id }, include: { customer: true, items: { include: { variant: true } } } }); if (!cart) throw new ApiError(404, 'Cart was not found.', 'CART_NOT_FOUND'); await prisma.cart.update({ where: { id }, data: { abandonmentStatus: 'REMINDER_SENT', lastReminderAt: new Date() } }); const value = cart.items.reduce((sum, item) => sum.plus(item.variant.price.mul(item.quantity)), new Prisma.Decimal(0)); const message = encodeURIComponent(`Johar ${cart.customer.name}! Aapke JoharHaat cart mein ₹${value.toFixed(2)} ka samaan intezar kar raha hai. Checkout complete karein.`); return { auditAt: new Date(), whatsappUrl: `https://wa.me/91${cart.customer.mobile}?text=${message}` }; }
-export const applications = () => prisma.vendorApplication.findMany({ include: { documents: true, audits: true }, orderBy: { createdAt: 'desc' } });
+export async function updateTeamMember(userId:string,id:string,input:{role?:AdminTeamRole;isActive?:boolean}){await adminAccess(userId,'team:manage');const member=await prisma.adminMembership.findUnique({where:{id}});if(!member)throw new ApiError(404,'Admin member was not found.','ADMIN_MEMBER_NOT_FOUND');
+  assertTeamChangeAllowed({ targetRole: member.role, targetIsSelf: member.userId === userId, nextRole: input.role, nextIsActive: input.isActive });
+  return prisma.adminMembership.update({where:{id},data:input});}
+
+export async function analytics(userId: string, months: number) { await adminAccess(userId, 'analytics:read'); const since = new Date(); since.setMonth(since.getMonth() - months); const [orders, carts, customers] = await Promise.all([prisma.order.findMany({ where: { createdAt: { gte: since } }, include: { vendorOrders: { include: { vendor: true } } } }), prisma.cart.findMany({ where: { createdAt: { gte: since } } }), prisma.user.count({ where: { role: UserRole.CUSTOMER, createdAt: { gte: since } } })]); const gmv = orders.reduce((sum, order) => sum.plus(order.gmv), new Prisma.Decimal(0)); const revenue = orders.flatMap((order) => order.vendorOrders).reduce((sum, order) => sum.plus(order.adminCommission), new Prisma.Decimal(0)); const monthly = new Map<string, { month: string; gmv: Prisma.Decimal; revenue: Prisma.Decimal; orders: number }>(); for (const order of orders) { const key = order.createdAt.toISOString().slice(0, 7); const point = monthly.get(key) ?? { month: key, gmv: new Prisma.Decimal(0), revenue: new Prisma.Decimal(0), orders: 0 }; point.gmv = point.gmv.plus(order.gmv); point.revenue = point.revenue.plus(order.vendorOrders.reduce((sum, vendorOrder) => sum.plus(vendorOrder.adminCommission), new Prisma.Decimal(0))); point.orders += 1; monthly.set(key, point); } const haats = new Map<string, { name: string; district: string; gmv: Prisma.Decimal; orders: number }>(); for (const order of orders.flatMap((item) => item.vendorOrders)) { const key = order.vendor.district; const point = haats.get(key) ?? { name: `${key.replaceAll('_', ' ')} Haat`, district: key, gmv: new Prisma.Decimal(0), orders: 0 }; point.gmv = point.gmv.plus(order.gmv); point.orders += 1; haats.set(key, point); } return { gmv, netRevenue: revenue, customerAcquisitionCost: customers ? new Prisma.Decimal(25000).div(customers).toDecimalPlaces(2) : new Prisma.Decimal(0), cartAbandonmentRate: carts.length ? (carts.filter((cart) => ['ABANDONED','REMINDER_SENT'].includes(cart.abandonmentStatus)).length / carts.length) * 100 : 0, monthly: [...monthly.values()], haats: [...haats.values()] }; }
+export const listHaats = async (userId: string) => (await adminAccess(userId, 'haats:manage'), prisma.weeklyHaat.findMany({ include: { overrides: true }, orderBy: [{ day: 'asc' }, { name: 'asc' }] }));
+export async function saveHaat(userId: string, id: string | undefined, input: any) { await adminAccess(userId, 'haats:manage'); if (input.opensAt >= input.closesAt) throw new ApiError(422, 'Closing time must be after opening time.', 'INVALID_HAAT_TIME'); return id ? prisma.weeklyHaat.update({ where: { id }, data: input }) : prisma.weeklyHaat.create({ data: input }); }
+export async function setLiveHaat(userId: string, id: string, liveUntil: Date) { await adminAccess(userId, 'haats:manage'); if (liveUntil <= new Date()) throw new ApiError(422, 'Live override must end in the future.', 'INVALID_LIVE_OVERRIDE'); return prisma.managedHaatOverride.create({ data: { haatId: id, liveFrom: new Date(), liveUntil } }); }
+export async function toggleHaat(userId: string, id: string, enabled: boolean) { await adminAccess(userId, 'haats:manage'); return prisma.weeklyHaat.update({ where: { id }, data: { isEnabled: enabled } }); }
+export const abandonedCarts = async (userId: string) => (await adminAccess(userId, 'marketing:manage'), prisma.cart.findMany({ where: { abandonmentStatus: { in: ['ABANDONED', 'REMINDER_SENT'] } }, include: { customer: { select: { name: true, email: true, mobile: true } }, items: { include: { variant: { include: { product: true } } } } }, orderBy: { updatedAt: 'desc' } }));
+export async function reminderOpened(userId: string, id: string) { await adminAccess(userId, 'marketing:manage'); const cart = await prisma.cart.findUnique({ where: { id }, include: { customer: true, items: { include: { variant: true } } } }); if (!cart) throw new ApiError(404, 'Cart was not found.', 'CART_NOT_FOUND'); await prisma.cart.update({ where: { id }, data: { abandonmentStatus: 'REMINDER_SENT', lastReminderAt: new Date() } }); const value = cart.items.reduce((sum, item) => sum.plus(item.variant.price.mul(item.quantity)), new Prisma.Decimal(0)); const message = encodeURIComponent(`Johar ${cart.customer.name}! Aapke JoharHaat cart mein ₹${value.toFixed(2)} ka samaan intezar kar raha hai. Checkout complete karein.`); return { auditAt: new Date(), whatsappUrl: `https://wa.me/91${cart.customer.mobile}?text=${message}` }; }
+export const applications = async (userId: string) => (await adminAccess(userId, 'moderation:manage'), prisma.vendorApplication.findMany({ include: { documents: true, audits: true }, orderBy: { createdAt: 'desc' } }));
 /**
  * Approval preconditions, kept pure so they are unit-testable without a database.
  *
@@ -112,6 +134,7 @@ export function assertApprovalEligible(input: { ownerHasPassword: boolean; msmeO
 }
 
 export async function moderate(actorId: string, requestId: string | undefined, id: string, status: ModerationStatus, reason?: string) {
+  await adminAccess(actorId, 'moderation:manage');
   if ((status === ModerationStatus.HOLD || status === ModerationStatus.REJECTED) && !reason?.trim()) throw new ApiError(422, 'A reason is required for hold or rejection.', 'REASON_REQUIRED');
   return prisma.$transaction(async (tx) => {
     const application = await tx.vendorApplication.findUnique({ where: { id }, include: { documents: true } });
@@ -138,13 +161,14 @@ export async function moderate(actorId: string, requestId: string | undefined, i
   });
 }
 
-export const productsForModeration = () => prisma.product.findMany({
+export const productsForModeration = async (userId: string) => (await adminAccess(userId, 'moderation:manage'), prisma.product.findMany({
   where: { lifecycleStatus: { in: [ProductLifecycleStatus.PENDING_REVIEW, ProductLifecycleStatus.REJECTED, ProductLifecycleStatus.SUSPENDED] } },
   include: { vendor: { include: { owner: { select: { name: true, mobile: true } } } }, category: true, variants: true, media: { orderBy: { sortOrder: 'asc' } }, reviewer: { select: { name: true } } },
   orderBy: [{ submittedAt: 'asc' }, { createdAt: 'asc' }],
-});
+}));
 
 export async function moderateProduct(actorId: string, requestId: string | undefined, id: string, decision: 'APPROVE' | 'REJECT' | 'SUSPEND', reason?: string) {
+  await adminAccess(actorId, 'moderation:manage');
   if (decision !== 'APPROVE' && !reason?.trim()) throw new ApiError(422, 'A moderation reason is required.', 'REASON_REQUIRED');
   return prisma.$transaction(async (tx) => {
     const product = await tx.product.findUnique({ where: { id }, include: { variants: true, media: true } });
