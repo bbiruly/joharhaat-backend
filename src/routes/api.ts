@@ -77,7 +77,12 @@ apiRouter.post('/payments/mock-webhook', asyncHandler(paymentController.webhook)
 
 apiRouter.post('/uploads/presign', validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('msme') }) })), asyncHandler(vendorController.presignUpload));
 apiRouter.post('/uploads/confirm', validate(z.object({ body: z.object({ objectKey: z.string().min(1) }) })), asyncHandler(vendorController.confirmUpload));
-apiRouter.post('/vendor-applications', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ body: applicationInput })), asyncHandler(vendorController.submitApplication));
+// Any signed-in account may apply. The role is NOT a meaningful gate here:
+// vendor.service.submitApplication already requires the caller to have a
+// password-protected active account and to match the application's email and
+// mobile. Restricting to CUSTOMER only meant an admin (or an existing vendor
+// re-checking status) got an opaque 403 "You do not have permission".
+apiRouter.post('/vendor-applications', authenticate, validate(z.object({ body: applicationInput })), asyncHandler(vendorController.submitApplication));
 apiRouter.get('/vendor/dashboard', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.dashboard));
 apiRouter.post('/vendor/uploads/presign', authenticate, authorize(UserRole.VENDOR), validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('product') }) })), asyncHandler(vendorController.presignUpload));
 apiRouter.get('/vendor/products', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.products));
@@ -103,6 +108,12 @@ apiRouter.post('/system/analytics/aggregate', authenticate, authorize(UserRole.S
 apiRouter.get('/admin/orders', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.orders));
 apiRouter.post('/admin/orders/:id/correct-status', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({status:z.enum(['PENDING','PACKED','SHIPPED','DELIVERED','RTO','CANCELLED']),reason:z.string().trim().min(5).max(1000)})})), asyncHandler(adminController.correctOrderStatus));
 apiRouter.get('/admin/payouts', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.payouts));
+
+apiRouter.get('/admin/customers', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.customers));
+apiRouter.get('/admin/customers/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.customer));
+apiRouter.post('/admin/customers/:id/revoke-sessions', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.revokeCustomerSessions));
+apiRouter.get('/admin/transactions', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.transactions));
+apiRouter.get('/admin/transactions/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.transaction));
 apiRouter.get('/admin/notifications', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.notifications));
 apiRouter.post('/admin/notifications/read-all', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.markAllNotifications));
 apiRouter.post('/admin/notifications/:id/read', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.markNotification));

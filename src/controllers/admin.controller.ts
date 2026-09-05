@@ -1,6 +1,8 @@
 import type { RequestHandler } from 'express';
 import { AdminTeamRole, FulfillmentStatus, ModerationStatus } from '../generated/prisma/client.js';
 import * as admin from '../services/admin.service.js';
+import * as adminCustomer from '../services/admin-customer.service.js';
+import * as adminTransaction from '../services/admin-transaction.service.js';
 
 export const analytics: RequestHandler = async (req, res) => res.json({ data: await admin.analytics(Number(req.query.months ?? 6)) });
 export const haats: RequestHandler = async (_req, res) => res.json({ data: await admin.listHaats() });
@@ -23,3 +25,10 @@ export const markNotification: RequestHandler = async (req,res)=>res.json({data:
 export const markAllNotifications: RequestHandler = async (req,res)=>res.json({data:await admin.markAllNotifications(req.auth!.userId)});
 export const team: RequestHandler = async (req,res)=>res.json({data:await admin.team(req.auth!.userId)});
 export const updateTeamMember: RequestHandler = async (req,res)=>res.json({data:await admin.updateTeamMember(req.auth!.userId,String(req.params.id),{...req.body,role:req.body.role as AdminTeamRole|undefined})});
+
+// --- Customer directory + payment attempts -------------------------------
+export const customers: RequestHandler = async (req, res) => res.json({ data: await adminCustomer.customers(req.auth!.userId, req.query) });
+export const customer: RequestHandler = async (req, res) => res.json({ data: await adminCustomer.customer(req.auth!.userId, String(req.params.id)) });
+export const revokeCustomerSessions: RequestHandler = async (req, res) => res.json({ data: await adminCustomer.revokeCustomerSessions(req.auth!.userId, req.requestId, String(req.params.id)) });
+export const transactions: RequestHandler = async (req, res) => res.json({ data: await adminTransaction.transactions(req.auth!.userId, req.query) });
+export const transaction: RequestHandler = async (req, res) => res.json({ data: await adminTransaction.transaction(req.auth!.userId, String(req.params.id)) });

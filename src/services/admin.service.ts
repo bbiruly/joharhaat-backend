@@ -1,4 +1,5 @@
-import { AdminTeamRole, FulfillmentStatus, ModerationStatus, Prisma, ProductLifecycleStatus, UserRole, VerificationStatus } from '../generated/prisma/client.js';
+import { AdminTeamRole, FulfillmentStatus, LedgerType, ModerationStatus, Prisma, ProductLifecycleStatus, UserRole, VerificationStatus } from '../generated/prisma/client.js';
+import { COMMERCE } from '../config/constants.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 
@@ -7,17 +8,79 @@ const rolePermissions: Record<AdminTeamRole, AdminPermission[]> = {
   SUPER_ADMIN: ['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','team:manage'],
   OPERATIONS: ['analytics:read','orders:manage','haats:manage'], FINANCE: ['analytics:read','analytics:export','payouts:manage'], MARKETING: ['analytics:read','marketing:manage'], MODERATOR: ['moderation:manage'],
 };
-export async function adminAccess(userId: string, permission?: AdminPermission) { const membership = await prisma.adminMembership.findUnique({ where: { userId } }); const role = membership?.role ?? AdminTeamRole.SUPER_ADMIN; if (membership && !membership.isActive) throw new ApiError(403,'Admin access is disabled.','ADMIN_DISABLED'); if (permission && !rolePermissions[role].includes(permission)) throw new ApiError(403,'Your admin role does not allow this action.','ADMIN_PERMISSION_DENIED'); return { role, permissions: rolePermissions[role] }; }
+/**
+ * Resolves the caller's admin role without checking any permission.
+ * A user with UserRole.ADMIN and no AdminMembership row is treated as
+ * SUPER_ADMIN — intentional for bootstrap, see the project reference.
+ */
+async function resolveAdminRole(userId: string) {
+  const membership = await prisma.adminMembership.findUnique({ where: { userId } });
+  const role = membership?.role ?? AdminTeamRole.SUPER_ADMIN;
+  if (membership && !membership.isActive) throw new ApiError(403, 'Admin access is disabled.', 'ADMIN_DISABLED');
+  return { role, permissions: rolePermissions[role] };
+}
+
+const permissionDenied = () => new ApiError(403, 'Your admin role does not allow this action.', 'ADMIN_PERMISSION_DENIED');
+
+export async function adminAccess(userId: string, permission?: AdminPermission) {
+  const access = await resolveAdminRole(userId);
+  if (permission && !access.permissions.includes(permission)) throw permissionDenied();
+  return access;
+}
+
+/**
+ * Grants when the caller holds ANY ONE of the listed permissions.
+ *
+ * Used where a screen is legitimately shared by two roles — payment attempts
+ * are read by FINANCE (`payouts:manage`) for reconciliation and by OPERATIONS
+ * (`orders:manage`) when a customer reports a failed payment. This adds no new
+ * permission and does not change the role matrix.
+ */
+export async function adminAccessAny(userId: string, permissions: AdminPermission[]) {
+  const access = await resolveAdminRole(userId);
+  if (permissions.length && !permissions.some((permission) => access.permissions.includes(permission))) throw permissionDenied();
+  return access;
+}
 
 export async function overview(userId: string) {
   await adminAccess(userId,'analytics:read'); const now=new Date(); const since=new Date(now.getTime()-30*86400000);
   const [orders,pendingKyc,pendingProducts,lowStock,pendingPayouts,expiringHaats]=await Promise.all([
-    prisma.order.findMany({where:{createdAt:{gte:since}},include:{vendorOrders:true}}), prisma.vendorApplication.count({where:{status:'PENDING'}}), prisma.product.count({where:{lifecycleStatus:'PENDING_REVIEW'}}), prisma.productVariant.count({where:{stock:{lt:5},isActive:true}}), prisma.payoutRequest.count({where:{status:{in:['PENDING','PROCESSING']}}}), prisma.managedHaatOverride.count({where:{enabled:true,liveUntil:{gt:now,lte:new Date(now.getTime()+86400000)}}})]);
+    prisma.order.findMany({where:{createdAt:{gte:since}},include:{vendorOrders:true}}), prisma.vendorApplication.count({where:{status:'PENDING'}}), prisma.product.count({where:{lifecycleStatus:'PENDING_REVIEW'}}), prisma.productVariant.count({where:{stock:{lt:COMMERCE.lowStockThreshold},isActive:true}}), prisma.payoutRequest.count({where:{status:{in:['PENDING','PROCESSING']}}}), prisma.managedHaatOverride.count({where:{enabled:true,liveUntil:{gt:now,lte:new Date(now.getTime()+86400000)}}})]);
   const vendorOrders=orders.flatMap(o=>o.vendorOrders); const gmv=orders.reduce((s,o)=>s.plus(o.gmv),new Prisma.Decimal(0)); const commission=vendorOrders.reduce((s,o)=>s.plus(o.adminCommission),new Prisma.Decimal(0)); const payoutLiability=vendorOrders.filter(o=>o.payoutStatus!=='RELEASED').reduce((s,o)=>s.plus(o.netVendorPayout),new Prisma.Decimal(0));
   return { snapshotAt:now, periodDays:30, metrics:{gmv,orders:orders.length,averageOrderValue:orders.length?gmv.div(orders.length):new Prisma.Decimal(0),commission,payoutLiability,deliverySuccessRate:vendorOrders.length?vendorOrders.filter(o=>o.status==='DELIVERED').length/vendorOrders.length*100:0,rtoOrders:vendorOrders.filter(o=>o.status==='RTO').length}, attention:{pendingKyc,pendingProducts,lowStock,pendingPayouts,expiringHaats,delayedOrders:vendorOrders.filter(o=>o.status==='PENDING'&&now.getTime()-o.createdAt.getTime()>86400000).length,failedPayments:orders.filter(o=>o.paymentStatus==='FAILED').length} };
 }
 export async function adminOrders(userId:string, query:any){await adminAccess(userId,'orders:manage'); const page=Math.max(1,Number(query.page)||1),pageSize=Math.min(100,Math.max(1,Number(query.pageSize)||20)); const where:Prisma.OrderWhereInput={...(query.paymentStatus?{paymentStatus:query.paymentStatus}:{}),...(query.q?{OR:[{orderNumber:{contains:query.q,mode:'insensitive'}},{recipientName:{contains:query.q,mode:'insensitive'}}]}:{})}; const [items,total]=await prisma.$transaction([prisma.order.findMany({where,include:{vendorOrders:{include:{vendor:true,items:true,statusLogs:{orderBy:{createdAt:'asc'}}}},paymentIntents:{orderBy:{createdAt:'desc'},take:1}},orderBy:{createdAt:'desc'},skip:(page-1)*pageSize,take:pageSize}),prisma.order.count({where})]);return{items,page,pageSize,total,totalPages:Math.ceil(total/pageSize)};}
-export async function correctOrderStatus(userId:string,requestId:string|undefined,id:string,status:FulfillmentStatus,reason:string){await adminAccess(userId,'orders:manage');if(!reason.trim())throw new ApiError(422,'A correction reason is required.','REASON_REQUIRED');return prisma.$transaction(async tx=>{const item=await tx.vendorOrder.findUnique({where:{id}});if(!item)throw new ApiError(404,'Vendor order was not found.','ORDER_NOT_FOUND');const updated=await tx.vendorOrder.update({where:{id},data:{status,statusLogs:{create:{status,actorUserId:userId,note:`Admin correction: ${reason}`}}}});await tx.adminActionReason.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,reason}});await tx.adminAuditLog.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,requestId:requestId??null,permission:'orders:manage',previousState:{status:item.status},nextState:{status}}});return updated;});}
+/**
+ * `deliveredAt` for a corrected consignment.
+ *
+ * The vendor's own transition stamps this, but the admin correction never did,
+ * so a consignment corrected to DELIVERED landed in the payouts queue
+ * (`where: { status: 'DELIVERED' }`, ordered by `deliveredAt`) with a null sort
+ * key. Correcting away from DELIVERED clears it again so the timestamp can
+ * never contradict the status.
+ */
+export function deliveredAtFor(status: FulfillmentStatus, current: Date | null, now = new Date()) {
+  if (status === FulfillmentStatus.DELIVERED) return current ?? now;
+  return null;
+}
+
+/**
+ * Escrow release is gated purely on `status === DELIVERED`, so correcting a
+ * consignment away from DELIVERED after the money has moved would strand a
+ * WalletLedger ESCROW_RELEASE row against a non-delivered order. Blocked rather
+ * than silently allowed — reversing a payout is a finance operation, not a
+ * status correction.
+ */
+export function assertCorrectionAllowed(status: FulfillmentStatus, escrowReleased: boolean) {
+  if (escrowReleased && status !== FulfillmentStatus.DELIVERED)
+    throw new ApiError(422, 'Escrow has already been released for this consignment, so it cannot be moved out of delivered.', 'PAYOUT_ALREADY_RELEASED');
+}
+
+export async function correctOrderStatus(userId:string,requestId:string|undefined,id:string,status:FulfillmentStatus,reason:string){await adminAccess(userId,'orders:manage');if(!reason.trim())throw new ApiError(422,'A correction reason is required.','REASON_REQUIRED');return prisma.$transaction(async tx=>{const item=await tx.vendorOrder.findUnique({where:{id}});if(!item)throw new ApiError(404,'Vendor order was not found.','ORDER_NOT_FOUND');
+    const escrow = await tx.walletLedger.findUnique({ where: { vendorId_vendorOrderId_type: { vendorId: item.vendorId, vendorOrderId: id, type: LedgerType.ESCROW_RELEASE } }, select: { id: true } });
+    assertCorrectionAllowed(status, Boolean(escrow));
+    const deliveredAt = deliveredAtFor(status, item.deliveredAt);
+    const updated=await tx.vendorOrder.update({where:{id},data:{status,deliveredAt,statusLogs:{create:{status,actorUserId:userId,note:`Admin correction: ${reason}`}}}});await tx.adminActionReason.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,reason}});await tx.adminAuditLog.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,requestId:requestId??null,permission:'orders:manage',previousState:{status:item.status,deliveredAt:item.deliveredAt},nextState:{status,deliveredAt}}});return updated;});}
 export async function payouts(userId:string){await adminAccess(userId,'payouts:manage');return Promise.all([prisma.vendorOrder.findMany({where:{status:'DELIVERED'},include:{vendor:true,walletLedgers:true},orderBy:{deliveredAt:'desc'}}),prisma.payoutRequest.findMany({include:{vendor:true},orderBy:{requestedAt:'desc'}}),prisma.walletLedger.findMany({include:{vendor:true,vendorOrder:true},orderBy:{createdAt:'desc'},take:100})]).then(([eligible,requests,ledgers])=>({eligible,requests,ledgers}));}
 export async function notifications(userId:string){await adminAccess(userId);return prisma.adminNotification.findMany({where:{OR:[{expiresAt:null},{expiresAt:{gt:new Date()}}]},include:{reads:{where:{userId}}},orderBy:{createdAt:'desc'},take:100});}
 export async function markNotification(userId:string,id:string){await adminAccess(userId);return prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:id,userId}},update:{readAt:new Date()},create:{notificationId:id,userId}});}
@@ -33,6 +96,21 @@ export async function toggleHaat(id: string, enabled: boolean) { return prisma.w
 export const abandonedCarts = () => prisma.cart.findMany({ where: { abandonmentStatus: { in: ['ABANDONED', 'REMINDER_SENT'] } }, include: { customer: { select: { name: true, email: true, mobile: true } }, items: { include: { variant: { include: { product: true } } } } }, orderBy: { updatedAt: 'desc' } });
 export async function reminderOpened(id: string) { const cart = await prisma.cart.findUnique({ where: { id }, include: { customer: true, items: { include: { variant: true } } } }); if (!cart) throw new ApiError(404, 'Cart was not found.', 'CART_NOT_FOUND'); await prisma.cart.update({ where: { id }, data: { abandonmentStatus: 'REMINDER_SENT', lastReminderAt: new Date() } }); const value = cart.items.reduce((sum, item) => sum.plus(item.variant.price.mul(item.quantity)), new Prisma.Decimal(0)); const message = encodeURIComponent(`Johar ${cart.customer.name}! Aapke JoharHaat cart mein ₹${value.toFixed(2)} ka samaan intezar kar raha hai. Checkout complete karein.`); return { auditAt: new Date(), whatsappUrl: `https://wa.me/91${cart.customer.mobile}?text=${message}` }; }
 export const applications = () => prisma.vendorApplication.findMany({ include: { documents: true, audits: true }, orderBy: { createdAt: 'desc' } });
+/**
+ * Approval preconditions, kept pure so they are unit-testable without a database.
+ *
+ * Both used to surface as 409 CONFLICT — the first explicitly, the second by
+ * letting a Prisma P2002 on the unique `Vendor.msmeNumber` escape to the error
+ * handler, which maps P2002 to 409. The admin UI renders any 409 as a write
+ * conflict ("someone else changed this record first"), so a first-attempt
+ * approval of an untouched record reported a phantom race. These are
+ * preconditions, not conflicts, so they are 422 with their own codes.
+ */
+export function assertApprovalEligible(input: { ownerHasPassword: boolean; msmeOwnedByAnotherVendor: boolean }) {
+  if (!input.ownerHasPassword) throw new ApiError(422, 'The applicant must create a password-protected account before approval.', 'APPLICANT_ACCOUNT_REQUIRED');
+  if (input.msmeOwnedByAnotherVendor) throw new ApiError(422, 'This MSME number is already registered to a different vendor.', 'MSME_ALREADY_REGISTERED');
+}
+
 export async function moderate(actorId: string, requestId: string | undefined, id: string, status: ModerationStatus, reason?: string) {
   if ((status === ModerationStatus.HOLD || status === ModerationStatus.REJECTED) && !reason?.trim()) throw new ApiError(422, 'A reason is required for hold or rejection.', 'REASON_REQUIRED');
   return prisma.$transaction(async (tx) => {
@@ -42,7 +120,15 @@ export async function moderate(actorId: string, requestId: string | undefined, i
     const updated = await tx.vendorApplication.update({ where: { id }, data: { status, decisionReason: reason ?? null, decidedAt: new Date(), audits: { create: { moderatorId: actorId, status, reason: reason ?? null } } } });
     if (status === ModerationStatus.APPROVED) {
       const owner = application.ownerUserId ? await tx.user.findUnique({ where: { id: application.ownerUserId } }) : await tx.user.findUnique({ where: { email: application.email } });
-      if (!owner?.passwordHash) throw new ApiError(409, 'Applicant must create a password-protected account before approval.', 'APPLICANT_ACCOUNT_REQUIRED');
+      // `submitApplication` guards the MSME number against other applications
+      // but never against an existing Vendor row, which is where the clash
+      // actually bites — check it before the upsert rather than after.
+      const msmeHolder = await tx.vendor.findUnique({ where: { msmeNumber: application.msmeNumber }, select: { ownerId: true } });
+      assertApprovalEligible({
+        ownerHasPassword: Boolean(owner?.passwordHash),
+        msmeOwnedByAnotherVendor: Boolean(owner && msmeHolder && msmeHolder.ownerId !== owner.id),
+      });
+      if (!owner) throw new ApiError(422, 'The applicant must create a password-protected account before approval.', 'APPLICANT_ACCOUNT_REQUIRED');
       await tx.user.update({ where: { id: owner.id }, data: { role: UserRole.VENDOR } });
       const certificate = application.documents.find((document) => document.category === 'MSME');
       await tx.vendor.upsert({ where: { ownerId: owner.id }, update: { verificationStatus: VerificationStatus.VERIFIED }, create: { ownerId: owner.id, businessName: application.collectiveName, district: application.district, region: application.district.replaceAll('_', ' '), msmeNumber: application.msmeNumber, msmeCertificateUrl: certificate?.objectKey ?? 'metadata-unavailable', verificationStatus: VerificationStatus.VERIFIED } });
