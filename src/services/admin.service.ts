@@ -1,4 +1,5 @@
 import { AdminTeamRole, FulfillmentStatus, LedgerType, ModerationStatus, Prisma, ProductLifecycleStatus, UserRole, VerificationStatus } from '../generated/prisma/client.js';
+import { COMMERCE } from '../config/constants.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 
@@ -44,7 +45,7 @@ export async function adminAccessAny(userId: string, permissions: AdminPermissio
 export async function overview(userId: string) {
   await adminAccess(userId,'analytics:read'); const now=new Date(); const since=new Date(now.getTime()-30*86400000);
   const [orders,pendingKyc,pendingProducts,lowStock,pendingPayouts,expiringHaats]=await Promise.all([
-    prisma.order.findMany({where:{createdAt:{gte:since}},include:{vendorOrders:true}}), prisma.vendorApplication.count({where:{status:'PENDING'}}), prisma.product.count({where:{lifecycleStatus:'PENDING_REVIEW'}}), prisma.productVariant.count({where:{stock:{lt:5},isActive:true}}), prisma.payoutRequest.count({where:{status:{in:['PENDING','PROCESSING']}}}), prisma.managedHaatOverride.count({where:{enabled:true,liveUntil:{gt:now,lte:new Date(now.getTime()+86400000)}}})]);
+    prisma.order.findMany({where:{createdAt:{gte:since}},include:{vendorOrders:true}}), prisma.vendorApplication.count({where:{status:'PENDING'}}), prisma.product.count({where:{lifecycleStatus:'PENDING_REVIEW'}}), prisma.productVariant.count({where:{stock:{lt:COMMERCE.lowStockThreshold},isActive:true}}), prisma.payoutRequest.count({where:{status:{in:['PENDING','PROCESSING']}}}), prisma.managedHaatOverride.count({where:{enabled:true,liveUntil:{gt:now,lte:new Date(now.getTime()+86400000)}}})]);
   const vendorOrders=orders.flatMap(o=>o.vendorOrders); const gmv=orders.reduce((s,o)=>s.plus(o.gmv),new Prisma.Decimal(0)); const commission=vendorOrders.reduce((s,o)=>s.plus(o.adminCommission),new Prisma.Decimal(0)); const payoutLiability=vendorOrders.filter(o=>o.payoutStatus!=='RELEASED').reduce((s,o)=>s.plus(o.netVendorPayout),new Prisma.Decimal(0));
   return { snapshotAt:now, periodDays:30, metrics:{gmv,orders:orders.length,averageOrderValue:orders.length?gmv.div(orders.length):new Prisma.Decimal(0),commission,payoutLiability,deliverySuccessRate:vendorOrders.length?vendorOrders.filter(o=>o.status==='DELIVERED').length/vendorOrders.length*100:0,rtoOrders:vendorOrders.filter(o=>o.status==='RTO').length}, attention:{pendingKyc,pendingProducts,lowStock,pendingPayouts,expiringHaats,delayedOrders:vendorOrders.filter(o=>o.status==='PENDING'&&now.getTime()-o.createdAt.getTime()>86400000).length,failedPayments:orders.filter(o=>o.paymentStatus==='FAILED').length} };
 }
