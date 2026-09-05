@@ -1,4 +1,4 @@
-import { AdminTeamRole, FulfillmentStatus, ModerationStatus, Prisma, ProductLifecycleStatus, UserRole, VerificationStatus } from '../generated/prisma/client.js';
+import { AdminTeamRole, FulfillmentStatus, LedgerType, ModerationStatus, Prisma, ProductLifecycleStatus, UserRole, VerificationStatus } from '../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 
@@ -17,7 +17,37 @@ export async function overview(userId: string) {
   return { snapshotAt:now, periodDays:30, metrics:{gmv,orders:orders.length,averageOrderValue:orders.length?gmv.div(orders.length):new Prisma.Decimal(0),commission,payoutLiability,deliverySuccessRate:vendorOrders.length?vendorOrders.filter(o=>o.status==='DELIVERED').length/vendorOrders.length*100:0,rtoOrders:vendorOrders.filter(o=>o.status==='RTO').length}, attention:{pendingKyc,pendingProducts,lowStock,pendingPayouts,expiringHaats,delayedOrders:vendorOrders.filter(o=>o.status==='PENDING'&&now.getTime()-o.createdAt.getTime()>86400000).length,failedPayments:orders.filter(o=>o.paymentStatus==='FAILED').length} };
 }
 export async function adminOrders(userId:string, query:any){await adminAccess(userId,'orders:manage'); const page=Math.max(1,Number(query.page)||1),pageSize=Math.min(100,Math.max(1,Number(query.pageSize)||20)); const where:Prisma.OrderWhereInput={...(query.paymentStatus?{paymentStatus:query.paymentStatus}:{}),...(query.q?{OR:[{orderNumber:{contains:query.q,mode:'insensitive'}},{recipientName:{contains:query.q,mode:'insensitive'}}]}:{})}; const [items,total]=await prisma.$transaction([prisma.order.findMany({where,include:{vendorOrders:{include:{vendor:true,items:true,statusLogs:{orderBy:{createdAt:'asc'}}}},paymentIntents:{orderBy:{createdAt:'desc'},take:1}},orderBy:{createdAt:'desc'},skip:(page-1)*pageSize,take:pageSize}),prisma.order.count({where})]);return{items,page,pageSize,total,totalPages:Math.ceil(total/pageSize)};}
-export async function correctOrderStatus(userId:string,requestId:string|undefined,id:string,status:FulfillmentStatus,reason:string){await adminAccess(userId,'orders:manage');if(!reason.trim())throw new ApiError(422,'A correction reason is required.','REASON_REQUIRED');return prisma.$transaction(async tx=>{const item=await tx.vendorOrder.findUnique({where:{id}});if(!item)throw new ApiError(404,'Vendor order was not found.','ORDER_NOT_FOUND');const updated=await tx.vendorOrder.update({where:{id},data:{status,statusLogs:{create:{status,actorUserId:userId,note:`Admin correction: ${reason}`}}}});await tx.adminActionReason.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,reason}});await tx.adminAuditLog.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,requestId:requestId??null,permission:'orders:manage',previousState:{status:item.status},nextState:{status}}});return updated;});}
+/**
+ * `deliveredAt` for a corrected consignment.
+ *
+ * The vendor's own transition stamps this, but the admin correction never did,
+ * so a consignment corrected to DELIVERED landed in the payouts queue
+ * (`where: { status: 'DELIVERED' }`, ordered by `deliveredAt`) with a null sort
+ * key. Correcting away from DELIVERED clears it again so the timestamp can
+ * never contradict the status.
+ */
+export function deliveredAtFor(status: FulfillmentStatus, current: Date | null, now = new Date()) {
+  if (status === FulfillmentStatus.DELIVERED) return current ?? now;
+  return null;
+}
+
+/**
+ * Escrow release is gated purely on `status === DELIVERED`, so correcting a
+ * consignment away from DELIVERED after the money has moved would strand a
+ * WalletLedger ESCROW_RELEASE row against a non-delivered order. Blocked rather
+ * than silently allowed — reversing a payout is a finance operation, not a
+ * status correction.
+ */
+export function assertCorrectionAllowed(status: FulfillmentStatus, escrowReleased: boolean) {
+  if (escrowReleased && status !== FulfillmentStatus.DELIVERED)
+    throw new ApiError(422, 'Escrow has already been released for this consignment, so it cannot be moved out of delivered.', 'PAYOUT_ALREADY_RELEASED');
+}
+
+export async function correctOrderStatus(userId:string,requestId:string|undefined,id:string,status:FulfillmentStatus,reason:string){await adminAccess(userId,'orders:manage');if(!reason.trim())throw new ApiError(422,'A correction reason is required.','REASON_REQUIRED');return prisma.$transaction(async tx=>{const item=await tx.vendorOrder.findUnique({where:{id}});if(!item)throw new ApiError(404,'Vendor order was not found.','ORDER_NOT_FOUND');
+    const escrow = await tx.walletLedger.findUnique({ where: { vendorId_vendorOrderId_type: { vendorId: item.vendorId, vendorOrderId: id, type: LedgerType.ESCROW_RELEASE } }, select: { id: true } });
+    assertCorrectionAllowed(status, Boolean(escrow));
+    const deliveredAt = deliveredAtFor(status, item.deliveredAt);
+    const updated=await tx.vendorOrder.update({where:{id},data:{status,deliveredAt,statusLogs:{create:{status,actorUserId:userId,note:`Admin correction: ${reason}`}}}});await tx.adminActionReason.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,reason}});await tx.adminAuditLog.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,requestId:requestId??null,permission:'orders:manage',previousState:{status:item.status,deliveredAt:item.deliveredAt},nextState:{status,deliveredAt}}});return updated;});}
 export async function payouts(userId:string){await adminAccess(userId,'payouts:manage');return Promise.all([prisma.vendorOrder.findMany({where:{status:'DELIVERED'},include:{vendor:true,walletLedgers:true},orderBy:{deliveredAt:'desc'}}),prisma.payoutRequest.findMany({include:{vendor:true},orderBy:{requestedAt:'desc'}}),prisma.walletLedger.findMany({include:{vendor:true,vendorOrder:true},orderBy:{createdAt:'desc'},take:100})]).then(([eligible,requests,ledgers])=>({eligible,requests,ledgers}));}
 export async function notifications(userId:string){await adminAccess(userId);return prisma.adminNotification.findMany({where:{OR:[{expiresAt:null},{expiresAt:{gt:new Date()}}]},include:{reads:{where:{userId}}},orderBy:{createdAt:'desc'},take:100});}
 export async function markNotification(userId:string,id:string){await adminAccess(userId);return prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:id,userId}},update:{readAt:new Date()},create:{notificationId:id,userId}});}
