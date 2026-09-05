@@ -33,6 +33,21 @@ export async function toggleHaat(id: string, enabled: boolean) { return prisma.w
 export const abandonedCarts = () => prisma.cart.findMany({ where: { abandonmentStatus: { in: ['ABANDONED', 'REMINDER_SENT'] } }, include: { customer: { select: { name: true, email: true, mobile: true } }, items: { include: { variant: { include: { product: true } } } } }, orderBy: { updatedAt: 'desc' } });
 export async function reminderOpened(id: string) { const cart = await prisma.cart.findUnique({ where: { id }, include: { customer: true, items: { include: { variant: true } } } }); if (!cart) throw new ApiError(404, 'Cart was not found.', 'CART_NOT_FOUND'); await prisma.cart.update({ where: { id }, data: { abandonmentStatus: 'REMINDER_SENT', lastReminderAt: new Date() } }); const value = cart.items.reduce((sum, item) => sum.plus(item.variant.price.mul(item.quantity)), new Prisma.Decimal(0)); const message = encodeURIComponent(`Johar ${cart.customer.name}! Aapke JoharHaat cart mein ₹${value.toFixed(2)} ka samaan intezar kar raha hai. Checkout complete karein.`); return { auditAt: new Date(), whatsappUrl: `https://wa.me/91${cart.customer.mobile}?text=${message}` }; }
 export const applications = () => prisma.vendorApplication.findMany({ include: { documents: true, audits: true }, orderBy: { createdAt: 'desc' } });
+/**
+ * Approval preconditions, kept pure so they are unit-testable without a database.
+ *
+ * Both used to surface as 409 CONFLICT — the first explicitly, the second by
+ * letting a Prisma P2002 on the unique `Vendor.msmeNumber` escape to the error
+ * handler, which maps P2002 to 409. The admin UI renders any 409 as a write
+ * conflict ("someone else changed this record first"), so a first-attempt
+ * approval of an untouched record reported a phantom race. These are
+ * preconditions, not conflicts, so they are 422 with their own codes.
+ */
+export function assertApprovalEligible(input: { ownerHasPassword: boolean; msmeOwnedByAnotherVendor: boolean }) {
+  if (!input.ownerHasPassword) throw new ApiError(422, 'The applicant must create a password-protected account before approval.', 'APPLICANT_ACCOUNT_REQUIRED');
+  if (input.msmeOwnedByAnotherVendor) throw new ApiError(422, 'This MSME number is already registered to a different vendor.', 'MSME_ALREADY_REGISTERED');
+}
+
 export async function moderate(actorId: string, requestId: string | undefined, id: string, status: ModerationStatus, reason?: string) {
   if ((status === ModerationStatus.HOLD || status === ModerationStatus.REJECTED) && !reason?.trim()) throw new ApiError(422, 'A reason is required for hold or rejection.', 'REASON_REQUIRED');
   return prisma.$transaction(async (tx) => {
@@ -42,7 +57,15 @@ export async function moderate(actorId: string, requestId: string | undefined, i
     const updated = await tx.vendorApplication.update({ where: { id }, data: { status, decisionReason: reason ?? null, decidedAt: new Date(), audits: { create: { moderatorId: actorId, status, reason: reason ?? null } } } });
     if (status === ModerationStatus.APPROVED) {
       const owner = application.ownerUserId ? await tx.user.findUnique({ where: { id: application.ownerUserId } }) : await tx.user.findUnique({ where: { email: application.email } });
-      if (!owner?.passwordHash) throw new ApiError(409, 'Applicant must create a password-protected account before approval.', 'APPLICANT_ACCOUNT_REQUIRED');
+      // `submitApplication` guards the MSME number against other applications
+      // but never against an existing Vendor row, which is where the clash
+      // actually bites — check it before the upsert rather than after.
+      const msmeHolder = await tx.vendor.findUnique({ where: { msmeNumber: application.msmeNumber }, select: { ownerId: true } });
+      assertApprovalEligible({
+        ownerHasPassword: Boolean(owner?.passwordHash),
+        msmeOwnedByAnotherVendor: Boolean(owner && msmeHolder && msmeHolder.ownerId !== owner.id),
+      });
+      if (!owner) throw new ApiError(422, 'The applicant must create a password-protected account before approval.', 'APPLICANT_ACCOUNT_REQUIRED');
       await tx.user.update({ where: { id: owner.id }, data: { role: UserRole.VENDOR } });
       const certificate = application.documents.find((document) => document.category === 'MSME');
       await tx.vendor.upsert({ where: { ownerId: owner.id }, update: { verificationStatus: VerificationStatus.VERIFIED }, create: { ownerId: owner.id, businessName: application.collectiveName, district: application.district, region: application.district.replaceAll('_', ' '), msmeNumber: application.msmeNumber, msmeCertificateUrl: certificate?.objectKey ?? 'metadata-unavailable', verificationStatus: VerificationStatus.VERIFIED } });

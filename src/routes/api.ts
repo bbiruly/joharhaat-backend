@@ -77,7 +77,12 @@ apiRouter.post('/payments/mock-webhook', asyncHandler(paymentController.webhook)
 
 apiRouter.post('/uploads/presign', validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('msme') }) })), asyncHandler(vendorController.presignUpload));
 apiRouter.post('/uploads/confirm', validate(z.object({ body: z.object({ objectKey: z.string().min(1) }) })), asyncHandler(vendorController.confirmUpload));
-apiRouter.post('/vendor-applications', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ body: applicationInput })), asyncHandler(vendorController.submitApplication));
+// Any signed-in account may apply. The role is NOT a meaningful gate here:
+// vendor.service.submitApplication already requires the caller to have a
+// password-protected active account and to match the application's email and
+// mobile. Restricting to CUSTOMER only meant an admin (or an existing vendor
+// re-checking status) got an opaque 403 "You do not have permission".
+apiRouter.post('/vendor-applications', authenticate, validate(z.object({ body: applicationInput })), asyncHandler(vendorController.submitApplication));
 apiRouter.get('/vendor/dashboard', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.dashboard));
 apiRouter.post('/vendor/uploads/presign', authenticate, authorize(UserRole.VENDOR), validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('product') }) })), asyncHandler(vendorController.presignUpload));
 apiRouter.get('/vendor/products', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.products));
