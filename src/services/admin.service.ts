@@ -7,7 +7,39 @@ const rolePermissions: Record<AdminTeamRole, AdminPermission[]> = {
   SUPER_ADMIN: ['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','team:manage'],
   OPERATIONS: ['analytics:read','orders:manage','haats:manage'], FINANCE: ['analytics:read','analytics:export','payouts:manage'], MARKETING: ['analytics:read','marketing:manage'], MODERATOR: ['moderation:manage'],
 };
-export async function adminAccess(userId: string, permission?: AdminPermission) { const membership = await prisma.adminMembership.findUnique({ where: { userId } }); const role = membership?.role ?? AdminTeamRole.SUPER_ADMIN; if (membership && !membership.isActive) throw new ApiError(403,'Admin access is disabled.','ADMIN_DISABLED'); if (permission && !rolePermissions[role].includes(permission)) throw new ApiError(403,'Your admin role does not allow this action.','ADMIN_PERMISSION_DENIED'); return { role, permissions: rolePermissions[role] }; }
+/**
+ * Resolves the caller's admin role without checking any permission.
+ * A user with UserRole.ADMIN and no AdminMembership row is treated as
+ * SUPER_ADMIN — intentional for bootstrap, see the project reference.
+ */
+async function resolveAdminRole(userId: string) {
+  const membership = await prisma.adminMembership.findUnique({ where: { userId } });
+  const role = membership?.role ?? AdminTeamRole.SUPER_ADMIN;
+  if (membership && !membership.isActive) throw new ApiError(403, 'Admin access is disabled.', 'ADMIN_DISABLED');
+  return { role, permissions: rolePermissions[role] };
+}
+
+const permissionDenied = () => new ApiError(403, 'Your admin role does not allow this action.', 'ADMIN_PERMISSION_DENIED');
+
+export async function adminAccess(userId: string, permission?: AdminPermission) {
+  const access = await resolveAdminRole(userId);
+  if (permission && !access.permissions.includes(permission)) throw permissionDenied();
+  return access;
+}
+
+/**
+ * Grants when the caller holds ANY ONE of the listed permissions.
+ *
+ * Used where a screen is legitimately shared by two roles — payment attempts
+ * are read by FINANCE (`payouts:manage`) for reconciliation and by OPERATIONS
+ * (`orders:manage`) when a customer reports a failed payment. This adds no new
+ * permission and does not change the role matrix.
+ */
+export async function adminAccessAny(userId: string, permissions: AdminPermission[]) {
+  const access = await resolveAdminRole(userId);
+  if (permissions.length && !permissions.some((permission) => access.permissions.includes(permission))) throw permissionDenied();
+  return access;
+}
 
 export async function overview(userId: string) {
   await adminAccess(userId,'analytics:read'); const now=new Date(); const since=new Date(now.getTime()-30*86400000);
