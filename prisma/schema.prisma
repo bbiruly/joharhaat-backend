@@ -1027,3 +1027,19 @@ model AdminActionReason {
   @@index([entityType, entityId, createdAt])
   @@map("admin_action_reasons")
 }
+
+/// Editable role -> permission matrix, managed from Settings > Permissions.
+/// Seeded from the code defaults; a role with no rows falls back to them, so an
+/// empty table can never lock everyone out. SUPER_ADMIN is never read from here
+/// — it always holds every permission, by construction.
+model RolePermission {
+  id         String        @id @default(cuid())
+  role       AdminTeamRole
+  permission String
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+
+  @@unique([role, permission])
+  @@index([role])
+  @@map("role_permissions")
+}

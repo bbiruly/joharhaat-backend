@@ -5,10 +5,106 @@ import { ApiError } from '../utils/api-error.js';
 import { codeOf } from '../config/status-codes.js';
 
 export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'team:manage';
-const rolePermissions: Record<AdminTeamRole, AdminPermission[]> = {
-  SUPER_ADMIN: ['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','team:manage'],
+
+/** Every permission the system understands. The Settings matrix offers these. */
+export const ALL_PERMISSIONS: AdminPermission[] = ['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','team:manage'];
+
+/**
+ * Fallback matrix. A role with no rows in `role_permissions` uses these, so an
+ * empty or partially-seeded table can never lock every operator out.
+ */
+const DEFAULT_ROLE_PERMISSIONS: Record<AdminTeamRole, AdminPermission[]> = {
+  SUPER_ADMIN: [...ALL_PERMISSIONS],
   OPERATIONS: ['analytics:read','orders:manage','haats:manage'], FINANCE: ['analytics:read','analytics:export','payouts:manage'], MARKETING: ['analytics:read','marketing:manage'], MODERATOR: ['moderation:manage'],
 };
+
+/**
+ * The matrix is consulted on every single admin request, so it is cached rather
+ * than re-queried each time. Short TTL, and invalidated immediately on edit, so
+ * a permission change takes effect at once for the editor and within the window
+ * for anyone already signed in.
+ */
+const MATRIX_TTL_MS = 30_000;
+let matrixCache: { at: number; value: Record<AdminTeamRole, AdminPermission[]> } | null = null;
+
+export const invalidatePermissionMatrix = () => { matrixCache = null; };
+
+export async function permissionMatrix(): Promise<Record<AdminTeamRole, AdminPermission[]>> {
+  if (matrixCache && Date.now() - matrixCache.at < MATRIX_TTL_MS) return matrixCache.value;
+  const rows = await prisma.rolePermission.findMany({ select: { role: true, permission: true } });
+  const grouped = new Map<AdminTeamRole, AdminPermission[]>();
+  for (const row of rows) {
+    if (!ALL_PERMISSIONS.includes(row.permission as AdminPermission)) continue; // stale row from a removed permission
+    grouped.set(row.role, [...(grouped.get(row.role) ?? []), row.permission as AdminPermission]);
+  }
+  const value = Object.fromEntries(
+    (Object.keys(DEFAULT_ROLE_PERMISSIONS) as AdminTeamRole[]).map((role) => [
+      role,
+      // SUPER_ADMIN is never configurable — it always holds everything, so the
+      // matrix cannot be edited into a state with no way back in.
+      role === AdminTeamRole.SUPER_ADMIN
+        ? [...ALL_PERMISSIONS]
+        : grouped.get(role) ?? DEFAULT_ROLE_PERMISSIONS[role],
+    ]),
+  ) as Record<AdminTeamRole, AdminPermission[]>;
+  matrixCache = { at: Date.now(), value };
+  return value;
+}
+
+/**
+ * Replace one role's permissions. SUPER_ADMIN only, and SUPER_ADMIN itself
+ * cannot be edited.
+ */
+export async function setRolePermissions(
+  userId: string,
+  requestId: string | undefined,
+  role: AdminTeamRole,
+  permissions: AdminPermission[],
+) {
+  const actor = await adminAccess(userId, 'team:manage');
+  if (actor.role !== AdminTeamRole.SUPER_ADMIN)
+    throw new ApiError(403, 'Only a SUPER_ADMIN can change the permission matrix.', 'SUPER_ADMIN_REQUIRED');
+  if (role === AdminTeamRole.SUPER_ADMIN)
+    throw new ApiError(422, 'SUPER_ADMIN always holds every permission and cannot be edited.', 'SUPER_ADMIN_PROTECTED');
+  const unknown = permissions.filter((permission) => !ALL_PERMISSIONS.includes(permission));
+  if (unknown.length) throw new ApiError(422, 'Unknown permission requested.', 'UNKNOWN_PERMISSION', { unknown });
+
+  const previous = (await permissionMatrix())[role];
+  await prisma.$transaction(async (tx) => {
+    await tx.rolePermission.deleteMany({ where: { role } });
+    if (permissions.length)
+      await tx.rolePermission.createMany({ data: permissions.map((permission) => ({ role, permission })) });
+    await tx.adminAuditLog.create({
+      data: {
+        actorId: userId,
+        action: codeOf('ADMIN_ROLE_CHANGED'),
+        entityType: 'RolePermission',
+        entityId: role,
+        requestId: requestId ?? null,
+        permission: 'team:manage',
+        previousState: { role, permissions: previous },
+        nextState: { role, permissions },
+      },
+    });
+  });
+  invalidatePermissionMatrix();
+  return { role, permissions };
+}
+
+/** The full matrix for the Settings screen. */
+export async function readPermissionMatrix(userId: string) {
+  await adminAccess(userId, 'team:manage');
+  const matrix = await permissionMatrix();
+  return {
+    allPermissions: ALL_PERMISSIONS,
+    roles: (Object.keys(matrix) as AdminTeamRole[]).map((role) => ({
+      role,
+      permissions: matrix[role],
+      /** SUPER_ADMIN is fixed at every permission and cannot be edited. */
+      isProtected: role === AdminTeamRole.SUPER_ADMIN,
+    })),
+  };
+}
 /**
  * Resolves the caller's admin role without checking any permission.
  * A user with UserRole.ADMIN and no AdminMembership row is treated as
@@ -18,7 +114,8 @@ async function resolveAdminRole(userId: string) {
   const membership = await prisma.adminMembership.findUnique({ where: { userId } });
   const role = membership?.role ?? AdminTeamRole.SUPER_ADMIN;
   if (membership && !membership.isActive) throw new ApiError(403, 'Admin access is disabled.', 'ADMIN_DISABLED');
-  return { role, permissions: rolePermissions[role] };
+  const matrix = await permissionMatrix();
+  return { role, permissions: matrix[role] };
 }
 
 const permissionDenied = () => new ApiError(403, 'Your admin role does not allow this action.', 'ADMIN_PERMISSION_DENIED');
