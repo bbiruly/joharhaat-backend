@@ -223,6 +223,10 @@ model User {
   name                   String
   role                   UserRole                @default(CUSTOMER)
   isActive               Boolean                 @default(true) @map("is_active")
+  /// Per-account brute-force lockout. IP rate limiting alone does not stop a
+  /// distributed attempt against one account; these track the account itself.
+  failedLoginCount       Int                     @default(0) @map("failed_login_count")
+  lockedUntil            DateTime?               @map("locked_until")
   createdAt              DateTime                @default(now()) @map("created_at")
   updatedAt              DateTime                @updatedAt @map("updated_at")
   vendor                 Vendor?

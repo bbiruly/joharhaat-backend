@@ -27,9 +27,46 @@ export async function register(input: { name: string; email: string; mobile: str
   return { user, ...(await issueSession(user, context)) };
 }
 
+/**
+ * Per-account brute-force lockout.
+ *
+ * The IP rate limiter on this route caps one source, which does nothing about
+ * a distributed attempt against a single account — a botnet gets ten tries per
+ * address, forever. These thresholds follow the account instead.
+ */
+export const LOCKOUT = { attempts: 8, minutes: 15 } as const;
+
+/** Whether a failed attempt should now lock the account, and until when. */
+export function lockoutAfterFailure(failedCount: number, now = new Date()) {
+  const next = failedCount + 1;
+  return {
+    failedLoginCount: next,
+    lockedUntil: next >= LOCKOUT.attempts ? new Date(now.getTime() + LOCKOUT.minutes * 60_000) : null,
+  };
+}
+
 export async function login(input: { email: string; password: string }, context: { userAgent: string | undefined; ip: string | undefined }) {
   const user = await prisma.user.findUnique({ where: { email: input.email } });
-  if (!user?.passwordHash || !user.isActive || !(await verify(user.passwordHash, input.password))) throw new ApiError(401, 'Email or password is incorrect.', 'INVALID_CREDENTIALS');
+
+  // Same message and status for every failure, so the response cannot be used
+  // to tell a real address from an unknown one.
+  const invalid = () => new ApiError(401, 'Email or password is incorrect.', 'INVALID_CREDENTIALS');
+
+  if (!user?.passwordHash || !user.isActive) throw invalid();
+
+  if (user.lockedUntil && user.lockedUntil > new Date())
+    throw new ApiError(429, `Too many failed attempts. Try again after ${LOCKOUT.minutes} minutes.`, 'ACCOUNT_LOCKED');
+
+  if (!(await verify(user.passwordHash, input.password))) {
+    await prisma.user.update({ where: { id: user.id }, data: lockoutAfterFailure(user.failedLoginCount) });
+    throw invalid();
+  }
+
+  // A good password clears the counter, including one set by an attacker
+  // hammering someone else's account.
+  if (user.failedLoginCount > 0 || user.lockedUntil)
+    await prisma.user.update({ where: { id: user.id }, data: { failedLoginCount: 0, lockedUntil: null } });
+
   const safe = await prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: publicUser });
   return { user: safe, ...(await issueSession(user, context)) };
 }
@@ -66,7 +103,9 @@ export async function resetPassword(token: string, password: string): Promise<vo
   const record = await prisma.passwordResetToken.findUnique({ where: { tokenHash: tokenHash(token) } });
   if (!record || record.usedAt || record.expiresAt <= new Date()) throw new ApiError(400, 'Password reset token is invalid or expired.', 'INVALID_RESET_TOKEN');
   await prisma.$transaction([
-    prisma.user.update({ where: { id: record.userId }, data: { passwordHash: await hash(password, { type: 2 }) } }),
+    // Clears any lockout too: a legitimate owner who was locked out by someone
+    // else guessing at their account must be able to reset their way back in.
+    prisma.user.update({ where: { id: record.userId }, data: { passwordHash: await hash(password, { type: 2 }), failedLoginCount: 0, lockedUntil: null } }),
     prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
     prisma.authSession.updateMany({ where: { userId: record.userId, revokedAt: null }, data: { revokedAt: new Date() } }),
   ]);

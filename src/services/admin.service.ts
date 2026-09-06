@@ -1,10 +1,12 @@
-import { AdminTeamRole, FulfillmentStatus, LedgerType, ModerationStatus, Prisma, ProductLifecycleStatus, UserRole, VerificationStatus } from '../generated/prisma/client.js';
+import { AdminTeamRole, FulfillmentStatus, JharkhandDistrict, LedgerType, ModerationStatus, Prisma, ProductLifecycleStatus, UserRole, VerificationStatus, WeeklyHaatDay } from '../generated/prisma/client.js';
 import { COMMERCE } from '../config/constants.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 import { codeOf } from '../config/status-codes.js';
+import { env } from '../config/env.js';
+import { logger } from '../utils/logger.js';
 import { pagination } from '../utils/pagination.js';
-import { logAudit } from '../utils/audit-log.js';
+import { logAudit, writeAudit } from '../utils/audit-log.js';
 import { cartAbandonmentRate, consignmentTotals, haatPerformance, monthlySeries, orderTotals } from './admin-analytics.service.js';
 
 export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'team:manage';
@@ -110,16 +112,35 @@ export async function readPermissionMatrix(userId: string) {
   };
 }
 /**
- * Resolves the caller's admin role without checking any permission.
- * A user with UserRole.ADMIN and no AdminMembership row is treated as
- * SUPER_ADMIN — intentional for bootstrap, see the project reference.
+ * Resolves the caller's admin role.
+ *
+ * A UserRole.ADMIN with no AdminMembership row used to be treated as
+ * SUPER_ADMIN. That was a bootstrap convenience from before admins could be
+ * created through the API, and it meant any account promoted to ADMIN by any
+ * route or by hand silently held all eight permissions.
+ *
+ * Now the membership row is the only source of a role. Bootstrapping a first
+ * SUPER_ADMIN is the seed's job, or set ADMIN_BOOTSTRAP_EMAIL to let exactly
+ * one known account through once — after which it should be unset.
  */
 async function resolveAdminRole(userId: string) {
   const membership = await prisma.adminMembership.findUnique({ where: { userId } });
-  const role = membership?.role ?? AdminTeamRole.SUPER_ADMIN;
-  if (membership && !membership.isActive) throw new ApiError(403, 'Admin access is disabled.', 'ADMIN_DISABLED');
+
+  if (!membership) {
+    const bootstrap = env.ADMIN_BOOTSTRAP_EMAIL?.trim().toLowerCase();
+    if (bootstrap) {
+      const account = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+      if (account?.email?.toLowerCase() === bootstrap) {
+        logger.warn({ userId }, 'ADMIN_BOOTSTRAP_EMAIL granted SUPER_ADMIN with no membership row — unset it once a real membership exists');
+        return { role: AdminTeamRole.SUPER_ADMIN, permissions: [...ALL_PERMISSIONS] };
+      }
+    }
+    throw new ApiError(403, 'This account has no admin membership.', 'ADMIN_MEMBERSHIP_REQUIRED');
+  }
+
+  if (!membership.isActive) throw new ApiError(403, 'Admin access is disabled.', 'ADMIN_DISABLED');
   const matrix = await permissionMatrix();
-  return { role, permissions: matrix[role] };
+  return { role: membership.role, permissions: matrix[membership.role] };
 }
 
 const permissionDenied = () => new ApiError(403, 'Your admin role does not allow this action.', 'ADMIN_PERMISSION_DENIED');
@@ -392,9 +413,13 @@ export function assertTeamChangeAllowed(input: {
     throw new ApiError(422, 'You cannot disable your own admin access.', 'SELF_DISABLE_FORBIDDEN');
 }
 
-export async function updateTeamMember(userId:string,id:string,input:{role?:AdminTeamRole;isActive?:boolean}){await adminAccess(userId,'team:manage');const member=await prisma.adminMembership.findUnique({where:{id}});if(!member)throw new ApiError(404,'Admin member was not found.','ADMIN_MEMBER_NOT_FOUND');
+export async function updateTeamMember(userId:string,id:string,input:{role?:AdminTeamRole;isActive?:boolean},requestId?:string){await adminAccess(userId,'team:manage');const member=await prisma.adminMembership.findUnique({where:{id}});if(!member)throw new ApiError(404,'Admin member was not found.','ADMIN_MEMBER_NOT_FOUND');
   assertTeamChangeAllowed({ targetRole: member.role, targetIsSelf: member.userId === userId, nextRole: input.role, nextIsActive: input.isActive });
-  return prisma.adminMembership.update({where:{id},data:input});}
+  const updated = await prisma.adminMembership.update({ where: { id }, data: input });
+  // A role or access change is exactly the kind of thing an incident review
+  // asks about, so it records both sides of the change.
+  await writeAudit(prisma, { event: 'TEAM_MEMBER_UPDATED', actorId: userId, entityType: 'AdminMembership', entityId: id, requestId, permission: 'team:manage', previousState: { role: member.role, isActive: member.isActive }, nextState: { role: updated.role, isActive: updated.isActive } });
+  return updated;}
 
 /**
  * Revenue series for the admin dashboard.
@@ -421,11 +446,68 @@ export async function analytics(userId: string, months: number) {
   return { gmv: totals.gmv, netRevenue, cartAbandonmentRate: abandonmentRate, monthly, haats };
 }
 export const listHaats = async (userId: string) => (await adminAccess(userId, 'haats:manage'), prisma.weeklyHaat.findMany({ include: { overrides: true }, orderBy: [{ day: 'asc' }, { name: 'asc' }] }));
-export async function saveHaat(userId: string, id: string | undefined, input: any) { await adminAccess(userId, 'haats:manage'); if (input.opensAt >= input.closesAt) throw new ApiError(422, 'Closing time must be after opening time.', 'INVALID_HAAT_TIME'); return id ? prisma.weeklyHaat.update({ where: { id }, data: input }) : prisma.weeklyHaat.create({ data: input }); }
-export async function setLiveHaat(userId: string, id: string, liveUntil: Date) { await adminAccess(userId, 'haats:manage'); if (liveUntil <= new Date()) throw new ApiError(422, 'Live override must end in the future.', 'INVALID_LIVE_OVERRIDE'); return prisma.managedHaatOverride.create({ data: { haatId: id, liveFrom: new Date(), liveUntil } }); }
-export async function toggleHaat(userId: string, id: string, enabled: boolean) { await adminAccess(userId, 'haats:manage'); return prisma.weeklyHaat.update({ where: { id }, data: { isEnabled: enabled } }); }
+/**
+ * The route validates this shape, so the object is safe to hand to Prisma.
+ * It used to be `any` spread straight into create/update, which let a caller
+ * set any column on the table.
+ */
+export interface HaatInput {
+  name: string;
+  district: JharkhandDistrict;
+  day: WeeklyHaatDay;
+  opensAt: string;
+  closesAt: string;
+  isEnabled?: boolean | undefined;
+}
+
+export async function saveHaat(userId: string, id: string | undefined, input: HaatInput, requestId?: string) {
+  await adminAccess(userId, 'haats:manage');
+  if (input.opensAt >= input.closesAt)
+    throw new ApiError(422, 'Closing time must be after opening time.', 'INVALID_HAAT_TIME');
+  // Build the row explicitly rather than spreading the input, so a field added
+  // to HaatInput later cannot silently reach a column it should not.
+  const data = {
+    name: input.name,
+    district: input.district,
+    day: input.day,
+    opensAt: input.opensAt,
+    closesAt: input.closesAt,
+    ...(input.isEnabled === undefined ? {} : { isEnabled: input.isEnabled }),
+  };
+  const previous = id
+    ? await prisma.weeklyHaat.findUnique({ where: { id }, select: { name: true, day: true, opensAt: true, closesAt: true, isEnabled: true } })
+    : null;
+  const saved = id
+    ? await prisma.weeklyHaat.update({ where: { id }, data })
+    : await prisma.weeklyHaat.create({ data });
+  await writeAudit(prisma, {
+    event: 'HAAT_SAVED',
+    actorId: userId,
+    entityType: 'WeeklyHaat',
+    entityId: saved.id,
+    requestId,
+    permission: 'haats:manage',
+    ...(previous ? { previousState: previous } : {}),
+    nextState: data,
+  });
+  return saved;
+}
+export async function setLiveHaat(userId: string, id: string, liveUntil: Date, requestId?: string) {
+  await adminAccess(userId, 'haats:manage');
+  if (liveUntil <= new Date()) throw new ApiError(422, 'Live override must end in the future.', 'INVALID_LIVE_OVERRIDE');
+  const override = await prisma.managedHaatOverride.create({ data: { haatId: id, liveFrom: new Date(), liveUntil } });
+  await writeAudit(prisma, { event: 'HAAT_SET_LIVE', actorId: userId, entityType: 'WeeklyHaat', entityId: id, requestId, permission: 'haats:manage', nextState: { liveUntil: liveUntil.toISOString() } });
+  return override;
+}
+export async function toggleHaat(userId: string, id: string, enabled: boolean, requestId?: string) {
+  await adminAccess(userId, 'haats:manage');
+  const before = await prisma.weeklyHaat.findUnique({ where: { id }, select: { isEnabled: true } });
+  const updated = await prisma.weeklyHaat.update({ where: { id }, data: { isEnabled: enabled } });
+  await writeAudit(prisma, { event: 'HAAT_TOGGLED', actorId: userId, entityType: 'WeeklyHaat', entityId: id, requestId, permission: 'haats:manage', previousState: { isEnabled: before?.isEnabled ?? null }, nextState: { isEnabled: enabled } });
+  return updated;
+}
 export const abandonedCarts = async (userId: string) => (await adminAccess(userId, 'marketing:manage'), prisma.cart.findMany({ where: { abandonmentStatus: { in: ['ABANDONED', 'REMINDER_SENT'] } }, include: { customer: { select: { name: true, email: true, mobile: true } }, items: { include: { variant: { include: { product: true } } } } }, orderBy: { updatedAt: 'desc' } }));
-export async function reminderOpened(userId: string, id: string) { await adminAccess(userId, 'marketing:manage'); const cart = await prisma.cart.findUnique({ where: { id }, include: { customer: true, items: { include: { variant: true } } } }); if (!cart) throw new ApiError(404, 'Cart was not found.', 'CART_NOT_FOUND'); await prisma.cart.update({ where: { id }, data: { abandonmentStatus: 'REMINDER_SENT', lastReminderAt: new Date() } }); const value = cart.items.reduce((sum, item) => sum.plus(item.variant.price.mul(item.quantity)), new Prisma.Decimal(0)); const message = encodeURIComponent(`Johar ${cart.customer.name}! Aapke JoharHaat cart mein ₹${value.toFixed(2)} ka samaan intezar kar raha hai. Checkout complete karein.`); return { auditAt: new Date(), whatsappUrl: `https://wa.me/91${cart.customer.mobile}?text=${message}` }; }
+export async function reminderOpened(userId: string, id: string, requestId?: string) { await adminAccess(userId, 'marketing:manage'); const cart = await prisma.cart.findUnique({ where: { id }, include: { customer: true, items: { include: { variant: true } } } }); if (!cart) throw new ApiError(404, 'Cart was not found.', 'CART_NOT_FOUND'); await prisma.cart.update({ where: { id }, data: { abandonmentStatus: 'REMINDER_SENT', lastReminderAt: new Date() } }); const value = cart.items.reduce((sum, item) => sum.plus(item.variant.price.mul(item.quantity)), new Prisma.Decimal(0)); const message = encodeURIComponent(`Johar ${cart.customer.name}! Aapke JoharHaat cart mein ₹${value.toFixed(2)} ka samaan intezar kar raha hai. Checkout complete karein.`); await writeAudit(prisma, { event: 'CART_REMINDER_PREPARED', actorId: userId, entityType: 'Cart', entityId: id, requestId, permission: 'marketing:manage' }); return { auditAt: new Date(), whatsappUrl: `https://wa.me/91${cart.customer.mobile}?text=${message}` }; }
 export const applications = async (userId: string) => (await adminAccess(userId, 'moderation:manage'), prisma.vendorApplication.findMany({ include: { documents: true, audits: true }, orderBy: { createdAt: 'desc' } }));
 /**
  * Approval preconditions, kept pure so they are unit-testable without a database.

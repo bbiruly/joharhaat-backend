@@ -6,11 +6,11 @@ import * as adminTransaction from '../services/admin-transaction.service.js';
 
 export const analytics: RequestHandler = async (req, res) => res.json({ data: await admin.analytics(req.auth!.userId, Number(req.query.months ?? 6)) });
 export const haats: RequestHandler = async (req, res) => res.json({ data: await admin.listHaats(req.auth!.userId) });
-export const saveHaat: RequestHandler = async (req, res) => res.status(req.params.id ? 200 : 201).json({ data: await admin.saveHaat(req.auth!.userId, req.params.id ? String(req.params.id) : undefined, req.body) });
-export const toggleHaat: RequestHandler = async (req, res) => res.json({ data: await admin.toggleHaat(req.auth!.userId, String(req.params.id), req.body.enabled) });
-export const liveHaat: RequestHandler = async (req, res) => res.status(201).json({ data: await admin.setLiveHaat(req.auth!.userId, String(req.params.id), new Date(req.body.liveUntil)) });
+export const saveHaat: RequestHandler = async (req, res) => res.status(req.params.id ? 200 : 201).json({ data: await admin.saveHaat(req.auth!.userId, req.params.id ? String(req.params.id) : undefined, req.body, req.requestId) });
+export const toggleHaat: RequestHandler = async (req, res) => res.json({ data: await admin.toggleHaat(req.auth!.userId, String(req.params.id), req.body.enabled, req.requestId) });
+export const liveHaat: RequestHandler = async (req, res) => res.status(201).json({ data: await admin.setLiveHaat(req.auth!.userId, String(req.params.id), new Date(req.body.liveUntil), req.requestId) });
 export const abandonedCarts: RequestHandler = async (req, res) => res.json({ data: await admin.abandonedCarts(req.auth!.userId) });
-export const reminderOpened: RequestHandler = async (req, res) => res.json({ data: await admin.reminderOpened(req.auth!.userId, String(req.params.id)) });
+export const reminderOpened: RequestHandler = async (req, res) => res.json({ data: await admin.reminderOpened(req.auth!.userId, String(req.params.id), req.requestId) });
 export const applications: RequestHandler = async (req, res) => res.json({ data: await admin.applications(req.auth!.userId) });
 export const moderate: RequestHandler = async (req, res) => res.json({ data: await admin.moderate(req.auth!.userId, req.requestId, String(req.params.id), req.body.status as ModerationStatus, req.body.reason) });
 export const productsForModeration: RequestHandler = async (req, res) => res.json({ data: await admin.productsForModeration(req.auth!.userId) });
@@ -24,7 +24,7 @@ export const notifications: RequestHandler = async (req,res)=>res.json({data:awa
 export const markNotification: RequestHandler = async (req,res)=>res.json({data:await admin.markNotification(req.auth!.userId,String(req.params.id))});
 export const markAllNotifications: RequestHandler = async (req,res)=>res.json({data:await admin.markAllNotifications(req.auth!.userId)});
 export const team: RequestHandler = async (req,res)=>res.json({data:await admin.team(req.auth!.userId)});
-export const updateTeamMember: RequestHandler = async (req,res)=>res.json({data:await admin.updateTeamMember(req.auth!.userId,String(req.params.id),{...req.body,role:req.body.role as AdminTeamRole|undefined})});
+export const updateTeamMember: RequestHandler = async (req,res)=>res.json({data:await admin.updateTeamMember(req.auth!.userId,String(req.params.id),{...req.body,role:req.body.role as AdminTeamRole|undefined},req.requestId)});
 
 // --- Customer directory + payment attempts -------------------------------
 export const customers: RequestHandler = async (req, res) => res.json({ data: await adminCustomer.customers(req.auth!.userId, req.query) });

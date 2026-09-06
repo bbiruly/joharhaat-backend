@@ -293,6 +293,36 @@ export const ADMIN_EVENTS = entry({
     en: 'Admin access restored',
     hi: 'एडमिन पहुँच बहाल की गई',
   },
+  TEAM_MEMBER_UPDATED: {
+    code: 'A008',
+    en: 'Admin member updated',
+    hi: 'एडमिन सदस्य अपडेट किया गया',
+  },
+  // Haats are marketplace configuration, but every change here is made by an
+  // admin, so they carry the admin-action prefix.
+  HAAT_SAVED: {
+    code: 'A009',
+    en: 'Haat schedule saved',
+    hi: 'हाट शेड्यूल सहेजा गया',
+    category: AdminNotificationCategory.HAAT,
+  },
+  HAAT_TOGGLED: {
+    code: 'A010',
+    en: 'Haat enabled or disabled',
+    hi: 'हाट चालू या बंद किया गया',
+    category: AdminNotificationCategory.HAAT,
+  },
+  HAAT_SET_LIVE: {
+    code: 'A011',
+    en: 'Haat set live',
+    hi: 'हाट लाइव किया गया',
+    category: AdminNotificationCategory.HAAT,
+  },
+  CART_REMINDER_PREPARED: {
+    code: 'A012',
+    en: 'Cart recovery reminder prepared',
+    hi: 'कार्ट रिमाइंडर तैयार किया गया',
+  },
 });
 
 /* ------------------------------------------------------------------ lookup */
