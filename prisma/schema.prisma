@@ -573,6 +573,8 @@ model Cart {
 
   @@index([customerId, abandonmentStatus])
   @@index([abandonmentStatus, updatedAt])
+  /// The abandonment rate counts carts created inside the window.
+  @@index([createdAt])
   @@map("carts")
 }
 
@@ -623,6 +625,9 @@ model Order {
 
   @@index([customerId, createdAt])
   @@index([paymentStatus, createdAt])
+  /// Month-bucketed analytics scan the window on createdAt alone; neither
+  /// composite index above leads with it, so neither can serve that scan.
+  @@index([createdAt])
   @@map("orders")
 }
 
@@ -652,6 +657,9 @@ model VendorOrder {
   @@unique([orderId, vendorId])
   @@index([vendorId, status, createdAt])
   @@index([status, payoutStatus])
+  /// Windowed consignment aggregates filter on status and createdAt with no
+  /// vendor, which the vendor-leading index above cannot serve.
+  @@index([status, createdAt])
   @@map("vendor_orders")
 }
 

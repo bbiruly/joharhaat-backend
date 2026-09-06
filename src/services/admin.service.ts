@@ -3,6 +3,7 @@ import { COMMERCE } from '../config/constants.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 import { codeOf } from '../config/status-codes.js';
+import { cartAbandonmentRate, consignmentTotals, haatPerformance, monthlySeries, orderTotals } from './admin-analytics.service.js';
 
 export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'team:manage';
 
@@ -140,12 +141,49 @@ export async function adminAccessAny(userId: string, permissions: AdminPermissio
   return access;
 }
 
+/**
+ * Thirty-day operational snapshot.
+ *
+ * Aggregated in Postgres. This used to pull every order in the window into
+ * memory with its vendor orders attached, which does not survive a marketplace
+ * doing lakhs of orders a day.
+ */
 export async function overview(userId: string) {
-  await adminAccess(userId,'analytics:read'); const now=new Date(); const since=new Date(now.getTime()-30*86400000);
-  const [orders,pendingKyc,pendingProducts,lowStock,pendingPayouts,expiringHaats]=await Promise.all([
-    prisma.order.findMany({where:{createdAt:{gte:since}},include:{vendorOrders:true}}), prisma.vendorApplication.count({where:{status:'PENDING'}}), prisma.product.count({where:{lifecycleStatus:'PENDING_REVIEW'}}), prisma.productVariant.count({where:{stock:{lt:COMMERCE.lowStockThreshold},isActive:true}}), prisma.payoutRequest.count({where:{status:{in:['PENDING','PROCESSING']}}}), prisma.managedHaatOverride.count({where:{enabled:true,liveUntil:{gt:now,lte:new Date(now.getTime()+86400000)}}})]);
-  const vendorOrders=orders.flatMap(o=>o.vendorOrders); const gmv=orders.reduce((s,o)=>s.plus(o.gmv),new Prisma.Decimal(0)); const commission=vendorOrders.reduce((s,o)=>s.plus(o.adminCommission),new Prisma.Decimal(0)); const payoutLiability=vendorOrders.filter(o=>o.payoutStatus!=='RELEASED').reduce((s,o)=>s.plus(o.netVendorPayout),new Prisma.Decimal(0));
-  return { snapshotAt:now, periodDays:30, metrics:{gmv,orders:orders.length,averageOrderValue:orders.length?gmv.div(orders.length):new Prisma.Decimal(0),commission,payoutLiability,deliverySuccessRate:vendorOrders.length?vendorOrders.filter(o=>o.status==='DELIVERED').length/vendorOrders.length*100:0,rtoOrders:vendorOrders.filter(o=>o.status==='RTO').length}, attention:{pendingKyc,pendingProducts,lowStock,pendingPayouts,expiringHaats,delayedOrders:vendorOrders.filter(o=>o.status==='PENDING'&&now.getTime()-o.createdAt.getTime()>86400000).length,failedPayments:orders.filter(o=>o.paymentStatus==='FAILED').length} };
+  await adminAccess(userId, 'analytics:read');
+  const now = new Date();
+  const since = new Date(now.getTime() - 30 * 86400000);
+  const [orders, consignments, pendingKyc, pendingProducts, lowStock, pendingPayouts, expiringHaats] =
+    await Promise.all([
+      orderTotals(since),
+      consignmentTotals(since, now),
+      prisma.vendorApplication.count({ where: { status: 'PENDING' } }),
+      prisma.product.count({ where: { lifecycleStatus: 'PENDING_REVIEW' } }),
+      prisma.productVariant.count({ where: { stock: { lt: COMMERCE.lowStockThreshold }, isActive: true } }),
+      prisma.payoutRequest.count({ where: { status: { in: ['PENDING', 'PROCESSING'] } } }),
+      prisma.managedHaatOverride.count({ where: { enabled: true, liveUntil: { gt: now, lte: new Date(now.getTime() + 86400000) } } }),
+    ]);
+  return {
+    snapshotAt: now,
+    periodDays: 30,
+    metrics: {
+      gmv: orders.gmv,
+      orders: orders.orders,
+      averageOrderValue: orders.averageOrderValue,
+      commission: consignments.commission,
+      payoutLiability: consignments.payoutLiability,
+      deliverySuccessRate: consignments.deliverySuccessRate,
+      rtoOrders: consignments.rto,
+    },
+    attention: {
+      pendingKyc,
+      pendingProducts,
+      lowStock,
+      pendingPayouts,
+      expiringHaats,
+      delayedOrders: consignments.delayed,
+      failedPayments: orders.failedPayments,
+    },
+  };
 }
 export async function adminOrders(userId:string, query:any){await adminAccess(userId,'orders:manage'); const page=Math.max(1,Number(query.page)||1),pageSize=Math.min(100,Math.max(1,Number(query.pageSize)||20)); const where:Prisma.OrderWhereInput={...(query.paymentStatus?{paymentStatus:query.paymentStatus}:{}),...(query.q?{OR:[{orderNumber:{contains:query.q,mode:'insensitive'}},{recipientName:{contains:query.q,mode:'insensitive'}}]}:{})}; const [items,total]=await prisma.$transaction([prisma.order.findMany({where,include:{vendorOrders:{include:{vendor:true,items:true,statusLogs:{orderBy:{createdAt:'asc'}}}},paymentIntents:{orderBy:{createdAt:'desc'},take:1}},orderBy:{createdAt:'desc'},skip:(page-1)*pageSize,take:pageSize}),prisma.order.count({where})]);return{items,page,pageSize,total,totalPages:Math.ceil(total/pageSize)};}
 /**
@@ -300,7 +338,30 @@ export async function updateTeamMember(userId:string,id:string,input:{role?:Admi
   assertTeamChangeAllowed({ targetRole: member.role, targetIsSelf: member.userId === userId, nextRole: input.role, nextIsActive: input.isActive });
   return prisma.adminMembership.update({where:{id},data:input});}
 
-export async function analytics(userId: string, months: number) { await adminAccess(userId, 'analytics:read'); const since = new Date(); since.setMonth(since.getMonth() - months); const [orders, carts, customers] = await Promise.all([prisma.order.findMany({ where: { createdAt: { gte: since } }, include: { vendorOrders: { include: { vendor: true } } } }), prisma.cart.findMany({ where: { createdAt: { gte: since } } }), prisma.user.count({ where: { role: UserRole.CUSTOMER, createdAt: { gte: since } } })]); const gmv = orders.reduce((sum, order) => sum.plus(order.gmv), new Prisma.Decimal(0)); const revenue = orders.flatMap((order) => order.vendorOrders).reduce((sum, order) => sum.plus(order.adminCommission), new Prisma.Decimal(0)); const monthly = new Map<string, { month: string; gmv: Prisma.Decimal; revenue: Prisma.Decimal; orders: number }>(); for (const order of orders) { const key = order.createdAt.toISOString().slice(0, 7); const point = monthly.get(key) ?? { month: key, gmv: new Prisma.Decimal(0), revenue: new Prisma.Decimal(0), orders: 0 }; point.gmv = point.gmv.plus(order.gmv); point.revenue = point.revenue.plus(order.vendorOrders.reduce((sum, vendorOrder) => sum.plus(vendorOrder.adminCommission), new Prisma.Decimal(0))); point.orders += 1; monthly.set(key, point); } const haats = new Map<string, { name: string; district: string; gmv: Prisma.Decimal; orders: number }>(); for (const order of orders.flatMap((item) => item.vendorOrders)) { const key = order.vendor.district; const point = haats.get(key) ?? { name: `${key.replaceAll('_', ' ')} Haat`, district: key, gmv: new Prisma.Decimal(0), orders: 0 }; point.gmv = point.gmv.plus(order.gmv); point.orders += 1; haats.set(key, point); } return { gmv, netRevenue: revenue, customerAcquisitionCost: customers ? new Prisma.Decimal(25000).div(customers).toDecimalPlaces(2) : new Prisma.Decimal(0), cartAbandonmentRate: carts.length ? (carts.filter((cart) => ['ABANDONED','REMINDER_SENT'].includes(cart.abandonmentStatus)).length / carts.length) * 100 : 0, monthly: [...monthly.values()], haats: [...haats.values()] }; }
+/**
+ * Revenue series for the admin dashboard.
+ *
+ * Every figure is aggregated in Postgres, so the response size is bounded by
+ * the number of months and districts rather than the number of orders.
+ *
+ * customerAcquisitionCost was removed: it divided a hardcoded 25,000 of
+ * "marketing spend" by the new-customer count. There is no marketing spend
+ * anywhere in the schema, so the number was invented, and no screen rendered
+ * it. A real CAC needs a real spend source.
+ */
+export async function analytics(userId: string, months: number) {
+  await adminAccess(userId, 'analytics:read');
+  const since = new Date();
+  since.setMonth(since.getMonth() - months);
+  const [monthly, haats, totals, abandonmentRate] = await Promise.all([
+    monthlySeries(since),
+    haatPerformance(since),
+    orderTotals(since),
+    cartAbandonmentRate(since),
+  ]);
+  const netRevenue = monthly.reduce((sum, point) => sum.plus(point.revenue), new Prisma.Decimal(0));
+  return { gmv: totals.gmv, netRevenue, cartAbandonmentRate: abandonmentRate, monthly, haats };
+}
 export const listHaats = async (userId: string) => (await adminAccess(userId, 'haats:manage'), prisma.weeklyHaat.findMany({ include: { overrides: true }, orderBy: [{ day: 'asc' }, { name: 'asc' }] }));
 export async function saveHaat(userId: string, id: string | undefined, input: any) { await adminAccess(userId, 'haats:manage'); if (input.opensAt >= input.closesAt) throw new ApiError(422, 'Closing time must be after opening time.', 'INVALID_HAAT_TIME'); return id ? prisma.weeklyHaat.update({ where: { id }, data: input }) : prisma.weeklyHaat.create({ data: input }); }
 export async function setLiveHaat(userId: string, id: string, liveUntil: Date) { await adminAccess(userId, 'haats:manage'); if (liveUntil <= new Date()) throw new ApiError(422, 'Live override must end in the future.', 'INVALID_LIVE_OVERRIDE'); return prisma.managedHaatOverride.create({ data: { haatId: id, liveFrom: new Date(), liveUntil } }); }
