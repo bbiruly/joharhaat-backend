@@ -19,7 +19,7 @@ export const access: RequestHandler = async (req,res)=>res.json({data:await admi
 export const overview: RequestHandler = async (req,res)=>res.json({data:await admin.overview(req.auth!.userId)});
 export const orders: RequestHandler = async (req,res)=>res.json({data:await admin.adminOrders(req.auth!.userId,req.query)});
 export const correctOrderStatus: RequestHandler = async (req,res)=>res.json({data:await admin.correctOrderStatus(req.auth!.userId,req.requestId,String(req.params.id),req.body.status as FulfillmentStatus,req.body.reason)});
-export const payouts: RequestHandler = async (req,res)=>res.json({data:await admin.payouts(req.auth!.userId)});
+export const payouts: RequestHandler = async (req,res)=>res.json({data:await admin.payouts(req.auth!.userId, req.query)});
 export const notifications: RequestHandler = async (req,res)=>res.json({data:await admin.notifications(req.auth!.userId)});
 export const markNotification: RequestHandler = async (req,res)=>res.json({data:await admin.markNotification(req.auth!.userId,String(req.params.id))});
 export const markAllNotifications: RequestHandler = async (req,res)=>res.json({data:await admin.markAllNotifications(req.auth!.userId)});

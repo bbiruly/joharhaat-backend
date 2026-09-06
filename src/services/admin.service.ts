@@ -3,6 +3,8 @@ import { COMMERCE } from '../config/constants.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 import { codeOf } from '../config/status-codes.js';
+import { pagination } from '../utils/pagination.js';
+import { logAudit } from '../utils/audit-log.js';
 import { cartAbandonmentRate, consignmentTotals, haatPerformance, monthlySeries, orderTotals } from './admin-analytics.service.js';
 
 export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'team:manage';
@@ -89,6 +91,7 @@ export async function setRolePermissions(
     });
   });
   invalidatePermissionMatrix();
+  logAudit({ event: 'ADMIN_ROLE_CHANGED', actorId: userId, entityType: 'RolePermission', entityId: role, requestId });
   return { role, permissions };
 }
 
@@ -216,11 +219,64 @@ export async function correctOrderStatus(userId:string,requestId:string|undefine
     const escrow = await tx.walletLedger.findUnique({ where: { vendorId_vendorOrderId_type: { vendorId: item.vendorId, vendorOrderId: id, type: LedgerType.ESCROW_RELEASE } }, select: { id: true } });
     assertCorrectionAllowed(status, Boolean(escrow));
     const deliveredAt = deliveredAtFor(status, item.deliveredAt);
-    const updated=await tx.vendorOrder.update({where:{id},data:{status,deliveredAt,statusLogs:{create:{status,actorUserId:userId,note:`Admin correction: ${reason}`}}}});await tx.adminActionReason.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,reason}});await tx.adminAuditLog.create({data:{actorId:userId,action:'ORDER_STATUS_CORRECTION',entityType:'VendorOrder',entityId:id,requestId:requestId??null,permission:'orders:manage',previousState:{status:item.status,deliveredAt:item.deliveredAt},nextState:{status,deliveredAt}}});return updated;});}
-export async function payouts(userId:string){await adminAccess(userId,'payouts:manage');return Promise.all([prisma.vendorOrder.findMany({where:{status:'DELIVERED'},include:{vendor:true,walletLedgers:true},orderBy:{deliveredAt:'desc'}}),prisma.payoutRequest.findMany({include:{vendor:true},orderBy:{requestedAt:'desc'}}),prisma.walletLedger.findMany({include:{vendor:true,vendorOrder:true},orderBy:{createdAt:'desc'},take:100})]).then(([eligible,requests,ledgers])=>({eligible,requests,ledgers}));}
+    const updated=await tx.vendorOrder.update({where:{id},data:{status,deliveredAt,statusLogs:{create:{status,actorUserId:userId,note:`Admin correction: ${reason}`}}}});await tx.adminActionReason.create({data:{actorId:userId,action:codeOf('ORDER_STATUS_CORRECTION'),entityType:'VendorOrder',entityId:id,reason}});await tx.adminAuditLog.create({data:{actorId:userId,action:codeOf('ORDER_STATUS_CORRECTION'),entityType:'VendorOrder',entityId:id,requestId:requestId??null,permission:'orders:manage',previousState:{status:item.status,deliveredAt:item.deliveredAt},nextState:{status,deliveredAt}}});logAudit({ event: 'ORDER_STATUS_CORRECTION', actorId: userId, entityType: 'VendorOrder', entityId: id, requestId });
+    return updated;});}
+/**
+ * Escrow and payout queues.
+ *
+ * Every delivered consignment stays DELIVERED forever, so `eligible` grew
+ * without bound — after a year of trading it would be the entire order history.
+ * The same for payout requests. All three lists are now paginated with the
+ * shared defaults, and each returns its own total so the screen can show
+ * "showing 20 of N" rather than silently truncating.
+ */
+export async function payouts(userId: string, query: { page?: unknown; pageSize?: unknown } = {}) {
+  await adminAccess(userId, 'payouts:manage');
+  const { page, pageSize, skip, take } = pagination(Number(query.page), Number(query.pageSize));
+  const [eligible, eligibleTotal, requests, requestsTotal, ledgers, ledgersTotal] = await Promise.all([
+    prisma.vendorOrder.findMany({ where: { status: 'DELIVERED' }, include: { vendor: true, walletLedgers: true }, orderBy: { deliveredAt: 'desc' }, skip, take }),
+    prisma.vendorOrder.count({ where: { status: 'DELIVERED' } }),
+    prisma.payoutRequest.findMany({ include: { vendor: true }, orderBy: { requestedAt: 'desc' }, skip, take }),
+    prisma.payoutRequest.count(),
+    prisma.walletLedger.findMany({ include: { vendor: true, vendorOrder: true }, orderBy: { createdAt: 'desc' }, skip, take }),
+    prisma.walletLedger.count(),
+  ]);
+  return {
+    eligible, requests, ledgers,
+    page, pageSize,
+    totals: { eligible: eligibleTotal, requests: requestsTotal, ledgers: ledgersTotal },
+    totalPages: {
+      eligible: Math.max(1, Math.ceil(eligibleTotal / pageSize)),
+      requests: Math.max(1, Math.ceil(requestsTotal / pageSize)),
+      ledgers: Math.max(1, Math.ceil(ledgersTotal / pageSize)),
+    },
+  };
+}
 export async function notifications(userId:string){await adminAccess(userId);return prisma.adminNotification.findMany({where:{OR:[{expiresAt:null},{expiresAt:{gt:new Date()}}]},include:{reads:{where:{userId}}},orderBy:{createdAt:'desc'},take:100});}
 export async function markNotification(userId:string,id:string){await adminAccess(userId);return prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:id,userId}},update:{readAt:new Date()},create:{notificationId:id,userId}});}
-export async function markAllNotifications(userId:string){await adminAccess(userId);const all=await prisma.adminNotification.findMany({select:{id:true}});await prisma.$transaction(all.map(n=>prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:n.id,userId}},update:{readAt:new Date()},create:{notificationId:n.id,userId}})));return{count:all.length};}
+/**
+ * Mark every live notification as read for this admin.
+ *
+ * Was: read every notification id, then one upsert per row inside a single
+ * transaction — N round trips holding a transaction open, growing with the
+ * table. Now one INSERT ... SELECT that skips rows already marked, so the work
+ * happens entirely in the database in a single statement.
+ *
+ * Scoped to notifications that have not expired, matching what `notifications()`
+ * actually returns — marking invisible history as read was pointless work.
+ */
+export async function markAllNotifications(userId: string) {
+  await adminAccess(userId);
+  // The table is keyed on (notification_id, user_id) with no surrogate id.
+  const inserted = await prisma.$executeRaw`
+    INSERT INTO admin_notification_reads (notification_id, user_id, read_at)
+    SELECT n.id, ${userId}, now()
+    FROM admin_notifications n
+    WHERE (n.expires_at IS NULL OR n.expires_at > now())
+    ON CONFLICT (notification_id, user_id) DO NOTHING
+  `;
+  return { count: inserted };
+}
 export async function team(userId:string){await adminAccess(userId,'team:manage');return prisma.adminMembership.findMany({include:{user:{select:{id:true,name:true,email:true,mobile:true,isActive:true,createdAt:true}}},orderBy:{createdAt:'asc'}});}
 /**
  * Promote an existing account to admin, or re-activate a membership that was
@@ -271,6 +327,7 @@ export async function createTeamMember(
         nextState: { role: input.role, isActive: true },
       },
     });
+    logAudit({ event: 'ADMIN_CREATED', actorId: userId, entityType: 'AdminMembership', entityId: membership.id, requestId });
     return membership;
   });
 }
@@ -310,6 +367,7 @@ export async function removeTeamMember(
         previousState: { role: member.role, isActive: member.isActive },
       },
     });
+    logAudit({ event: 'ADMIN_DISABLED', actorId: userId, entityType: 'AdminMembership', entityId: id, requestId });
     return { removed: true };
   });
 }
