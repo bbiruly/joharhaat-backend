@@ -32,3 +32,5 @@ export const customer: RequestHandler = async (req, res) => res.json({ data: awa
 export const revokeCustomerSessions: RequestHandler = async (req, res) => res.json({ data: await adminCustomer.revokeCustomerSessions(req.auth!.userId, req.requestId, String(req.params.id)) });
 export const transactions: RequestHandler = async (req, res) => res.json({ data: await adminTransaction.transactions(req.auth!.userId, req.query) });
 export const transaction: RequestHandler = async (req, res) => res.json({ data: await adminTransaction.transaction(req.auth!.userId, String(req.params.id)) });
+export const createTeamMember: RequestHandler = async (req, res) => res.status(201).json({ data: await admin.createTeamMember(req.auth!.userId, req.requestId, { email: req.body.email, role: req.body.role as AdminTeamRole }) });
+export const removeTeamMember: RequestHandler = async (req, res) => res.json({ data: await admin.removeTeamMember(req.auth!.userId, req.requestId, String(req.params.id)) });

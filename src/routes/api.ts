@@ -126,6 +126,8 @@ apiRouter.get('/admin/notifications', authenticate, authorize(UserRole.ADMIN), a
 apiRouter.post('/admin/notifications/read-all', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.markAllNotifications));
 apiRouter.post('/admin/notifications/:id/read', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.markNotification));
 apiRouter.get('/admin/team', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.team));
+apiRouter.post('/admin/team', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:z.object({email:z.string().email(),role:z.enum(['SUPER_ADMIN','OPERATIONS','FINANCE','MARKETING','MODERATOR'])})})), asyncHandler(adminController.createTeamMember));
+apiRouter.delete('/admin/team/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.removeTeamMember));
 apiRouter.patch('/admin/team/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({role:z.enum(['SUPER_ADMIN','OPERATIONS','FINANCE','MARKETING','MODERATOR']).optional(),isActive:z.boolean().optional()})})), asyncHandler(adminController.updateTeamMember));
 apiRouter.get('/admin/haats', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.haats));
 apiRouter.post('/admin/haats', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.saveHaat));

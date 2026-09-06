@@ -2,6 +2,7 @@ import { AdminTeamRole, FulfillmentStatus, LedgerType, ModerationStatus, Prisma,
 import { COMMERCE } from '../config/constants.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
+import { codeOf } from '../config/status-codes.js';
 
 export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'team:manage';
 const rolePermissions: Record<AdminTeamRole, AdminPermission[]> = {
@@ -86,6 +87,98 @@ export async function notifications(userId:string){await adminAccess(userId);ret
 export async function markNotification(userId:string,id:string){await adminAccess(userId);return prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:id,userId}},update:{readAt:new Date()},create:{notificationId:id,userId}});}
 export async function markAllNotifications(userId:string){await adminAccess(userId);const all=await prisma.adminNotification.findMany({select:{id:true}});await prisma.$transaction(all.map(n=>prisma.adminNotificationRead.upsert({where:{notificationId_userId:{notificationId:n.id,userId}},update:{readAt:new Date()},create:{notificationId:n.id,userId}})));return{count:all.length};}
 export async function team(userId:string){await adminAccess(userId,'team:manage');return prisma.adminMembership.findMany({include:{user:{select:{id:true,name:true,email:true,mobile:true,isActive:true,createdAt:true}}},orderBy:{createdAt:'asc'}});}
+/**
+ * Promote an existing account to admin, or re-activate a membership that was
+ * disabled earlier.
+ *
+ * Only SUPER_ADMIN may do this. `team:manage` alone is not enough: an
+ * OPERATIONS admin holding it could otherwise mint themselves a SUPER_ADMIN
+ * peer and escalate out of their own role.
+ *
+ * The person must already have a JoharHaat account — this does not create
+ * users, so there is no path here to a credential-less admin, and the operator
+ * has to know the exact email of a real person.
+ */
+export async function createTeamMember(
+  userId: string,
+  requestId: string | undefined,
+  input: { email: string; role: AdminTeamRole },
+) {
+  const actor = await adminAccess(userId, 'team:manage');
+  if (actor.role !== AdminTeamRole.SUPER_ADMIN)
+    throw new ApiError(403, 'Only a SUPER_ADMIN can add admin members.', 'SUPER_ADMIN_REQUIRED');
+
+  const account = await prisma.user.findUnique({
+    where: { email: input.email.trim().toLowerCase() },
+    select: { id: true, isActive: true, adminMembership: { select: { id: true } } },
+  });
+  if (!account)
+    throw new ApiError(404, 'No JoharHaat account exists with that email. Ask them to register first.', 'ACCOUNT_NOT_FOUND');
+  if (!account.isActive)
+    throw new ApiError(422, 'That account is disabled and cannot be made an admin.', 'ACCOUNT_DISABLED');
+  if (account.adminMembership)
+    throw new ApiError(409, 'That account is already an admin member.', 'ADMIN_MEMBER_EXISTS');
+
+  return prisma.$transaction(async (tx) => {
+    const membership = await tx.adminMembership.create({
+      data: { userId: account.id, role: input.role, isActive: true },
+      include: { user: { select: { id: true, name: true, email: true, mobile: true } } },
+    });
+    await tx.user.update({ where: { id: account.id }, data: { role: UserRole.ADMIN } });
+    await tx.adminAuditLog.create({
+      data: {
+        actorId: userId,
+        action: codeOf('ADMIN_CREATED'),
+        entityType: 'AdminMembership',
+        entityId: membership.id,
+        requestId: requestId ?? null,
+        permission: 'team:manage',
+        nextState: { role: input.role, isActive: true },
+      },
+    });
+    return membership;
+  });
+}
+
+/**
+ * Revoke admin access: the membership row is removed and the account drops
+ * back to CUSTOMER. The person keeps their JoharHaat account and order history
+ * — this is not a user deletion.
+ */
+export async function removeTeamMember(
+  userId: string,
+  requestId: string | undefined,
+  id: string,
+) {
+  const actor = await adminAccess(userId, 'team:manage');
+  if (actor.role !== AdminTeamRole.SUPER_ADMIN)
+    throw new ApiError(403, 'Only a SUPER_ADMIN can remove admin members.', 'SUPER_ADMIN_REQUIRED');
+
+  const member = await prisma.adminMembership.findUnique({ where: { id } });
+  if (!member) throw new ApiError(404, 'Admin member was not found.', 'ADMIN_MEMBER_NOT_FOUND');
+  if (member.role === AdminTeamRole.SUPER_ADMIN)
+    throw new ApiError(422, 'A SUPER_ADMIN cannot be removed from the admin panel.', 'SUPER_ADMIN_PROTECTED');
+  if (member.userId === userId)
+    throw new ApiError(422, 'You cannot remove your own admin access.', 'SELF_DISABLE_FORBIDDEN');
+
+  return prisma.$transaction(async (tx) => {
+    await tx.adminMembership.delete({ where: { id } });
+    await tx.user.update({ where: { id: member.userId }, data: { role: UserRole.CUSTOMER } });
+    await tx.adminAuditLog.create({
+      data: {
+        actorId: userId,
+        action: codeOf('ADMIN_DISABLED'),
+        entityType: 'AdminMembership',
+        entityId: id,
+        requestId: requestId ?? null,
+        permission: 'team:manage',
+        previousState: { role: member.role, isActive: member.isActive },
+      },
+    });
+    return { removed: true };
+  });
+}
+
 /**
  * A SUPER_ADMIN may not be disabled or demoted through the API, by anyone —
  * including another SUPER_ADMIN and including themselves. Losing every
