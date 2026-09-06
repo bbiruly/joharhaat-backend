@@ -3,6 +3,8 @@ import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 import { pagination } from '../utils/pagination.js';
 import { adminAccess } from './admin.service.js';
+import { logAudit } from '../utils/audit-log.js';
+import { codeOf } from '../config/status-codes.js';
 
 /**
  * Customer directory for order support.
@@ -292,7 +294,7 @@ export async function revokeCustomerSessions(
   await prisma.adminAuditLog.create({
     data: {
       actorId: userId,
-      action: 'CUSTOMER_SESSIONS_REVOKED',
+      action: codeOf('CUSTOMER_SESSIONS_REVOKED'),
       entityType: 'User',
       entityId: id,
       requestId: requestId ?? null,
@@ -301,5 +303,6 @@ export async function revokeCustomerSessions(
     },
   });
 
+  logAudit({ event: 'CUSTOMER_SESSIONS_REVOKED', actorId: userId, entityType: 'User', entityId: id, requestId });
   return { revoked: result.count };
 }

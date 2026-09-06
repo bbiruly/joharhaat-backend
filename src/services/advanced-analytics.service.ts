@@ -11,6 +11,7 @@ import { prisma } from '../db/prisma.js';
 import { COMMERCE } from '../config/constants.js';
 import { pagination } from '../utils/pagination.js';
 import { adminAccess } from './admin.service.js';
+import { codeOf } from '../config/status-codes.js';
 import {
   createAdminNotifications,
   type AdminNotificationInput,
@@ -776,4 +777,4 @@ export function stockAlert(
 // ---------------------------------------------------------------------------
 
 const safeCell=(v:unknown)=>{const text=String(v??'');const safe=/^[=+\-@]/.test(text)?`'${text}`:text;return `"${safe.replaceAll('"','""')}"`};
-export async function productCsv(userId:string,days=30,q=''){await adminAccess(userId,'analytics:export');const {listProductAnalytics}=await import('./product-analytics.service.js');const rows=await listProductAnalytics(userId,{days,...(q?{q}:{})});const header=['Product','Vendor','Category','District','Views','Cart Adds','Units Sold','Conversion %','Revenue','Stock','Health Score','Health Band'];const csv=[header,...rows.map(r=>[r.name,r.vendor,r.category,r.district,r.views,r.cartAdds,r.purchases,r.conversionRate,r.revenue,r.stock,r.health.score,r.health.band])].map(row=>row.map(safeCell).join(',')).join('\r\n');await prisma.adminAuditLog.create({data:{actorId:userId,action:'PRODUCT_ANALYTICS_EXPORT',entityType:'AnalyticsExport',entityId:randomUUID(),permission:'analytics:export',metadata:{days,q,rowCount:rows.length}}});return{csv,rowCount:rows.length};}
+export async function productCsv(userId:string,days=30,q=''){await adminAccess(userId,'analytics:export');const {listProductAnalytics}=await import('./product-analytics.service.js');const rows=await listProductAnalytics(userId,{days,...(q?{q}:{})});const header=['Product','Vendor','Category','District','Views','Cart Adds','Units Sold','Conversion %','Revenue','Stock','Health Score','Health Band'];const csv=[header,...rows.map(r=>[r.name,r.vendor,r.category,r.district,r.views,r.cartAdds,r.purchases,r.conversionRate,r.revenue,r.stock,r.health.score,r.health.band])].map(row=>row.map(safeCell).join(',')).join('\r\n');await prisma.adminAuditLog.create({data:{actorId:userId,action:codeOf('PRODUCT_ANALYTICS_EXPORT'),entityType:'AnalyticsExport',entityId:randomUUID(),permission:'analytics:export',metadata:{days,q,rowCount:rows.length}}});return{csv,rowCount:rows.length};}

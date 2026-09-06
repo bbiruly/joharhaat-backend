@@ -573,6 +573,8 @@ model Cart {
 
   @@index([customerId, abandonmentStatus])
   @@index([abandonmentStatus, updatedAt])
+  /// The abandonment rate counts carts created inside the window.
+  @@index([createdAt])
   @@map("carts")
 }
 
@@ -623,6 +625,9 @@ model Order {
 
   @@index([customerId, createdAt])
   @@index([paymentStatus, createdAt])
+  /// Month-bucketed analytics scan the window on createdAt alone; neither
+  /// composite index above leads with it, so neither can serve that scan.
+  @@index([createdAt])
   @@map("orders")
 }
 
@@ -652,6 +657,9 @@ model VendorOrder {
   @@unique([orderId, vendorId])
   @@index([vendorId, status, createdAt])
   @@index([status, payoutStatus])
+  /// Windowed consignment aggregates filter on status and createdAt with no
+  /// vendor, which the vendor-leading index above cannot serve.
+  @@index([status, createdAt])
   @@map("vendor_orders")
 }
 
@@ -1026,4 +1034,20 @@ model AdminActionReason {
 
   @@index([entityType, entityId, createdAt])
   @@map("admin_action_reasons")
+}
+
+/// Editable role -> permission matrix, managed from Settings > Permissions.
+/// Seeded from the code defaults; a role with no rows falls back to them, so an
+/// empty table can never lock everyone out. SUPER_ADMIN is never read from here
+/// — it always holds every permission, by construction.
+model RolePermission {
+  id         String        @id @default(cuid())
+  role       AdminTeamRole
+  permission String
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+
+  @@unique([role, permission])
+  @@index([role])
+  @@map("role_permissions")
 }
