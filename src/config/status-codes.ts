@@ -342,6 +342,22 @@ export const ADMIN_EVENTS = entry({
     hi: 'कूपन हटाया गया',
     severity: AdminNotificationSeverity.WARNING,
   },
+  REVIEW_HIDDEN: {
+    code: 'A016',
+    en: 'Review hidden by moderation',
+    hi: 'समीक्षा छिपाई गई',
+    severity: AdminNotificationSeverity.WARNING,
+  },
+  REVIEW_RESTORED: {
+    code: 'A017',
+    en: 'Review restored',
+    hi: 'समीक्षा वापस दिखाई गई',
+  },
+  REVIEW_REPORTS_DISMISSED: {
+    code: 'A018',
+    en: 'Review reports dismissed',
+    hi: 'समीक्षा की शिकायतें खारिज कीं',
+  },
 });
 
 /* ------------------------------------------------------------------ lookup */

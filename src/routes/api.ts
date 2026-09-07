@@ -6,6 +6,7 @@ import { checkoutController, checkoutQuoteController } from '../controllers/chec
 import * as authController from '../controllers/auth.controller.js';
 import * as customerController from '../controllers/customer.controller.js';
 import * as catalogController from '../controllers/catalog.controller.js';
+import * as reviewController from '../controllers/review.controller.js';
 import * as paymentController from '../controllers/payment.controller.js';
 import * as vendorController from '../controllers/vendor.controller.js';
 import * as adminController from '../controllers/admin.controller.js';
@@ -66,6 +67,24 @@ apiRouter.get('/categories', asyncHandler(catalogController.categories));
 apiRouter.get('/districts', asyncHandler(catalogController.districts));
 apiRouter.get('/haats', asyncHandler(catalogController.haats));
 apiRouter.get('/products/:id', validate(z.object({ params: idParams })), asyncHandler(catalogController.product));
+
+/* -------------------------------------------------------------- reviews ---
+ * Reading is public. Writing requires a DELIVERED order that contained the
+ * product — review.service.assertCanReview is the gate, not the role, which is
+ * what makes "Verified buyer" a fact rather than a label. Reporting is open to
+ * any signed-in account so publish-immediately stays safe.
+ * ------------------------------------------------------------------------- */
+const reviewMedia = z.array(z.object({objectKey:z.string().min(1),url:z.string().url(),altText:z.string().max(200)})).max(5).optional();
+const reviewBody = z.object({rating:z.number().int().min(1).max(5),body:z.string().max(2000).optional(),media:reviewMedia});
+apiRouter.get('/products/:id/reviews', validate(z.object({ params: idParams })), asyncHandler(reviewController.listForProduct));
+apiRouter.get('/products/:id/rating', validate(z.object({ params: idParams })), asyncHandler(reviewController.ratingFor));
+apiRouter.get('/orders/:id/reviewable', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ params: idParams })), asyncHandler(reviewController.reviewable));
+apiRouter.post('/reviews', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({body:reviewBody.extend({productId:z.string().min(1),orderId:z.string().min(1)})})), asyncHandler(reviewController.create));
+apiRouter.put('/reviews/:id', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({params:idParams,body:reviewBody})), asyncHandler(reviewController.update));
+apiRouter.delete('/reviews/:id', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({params:idParams})), asyncHandler(reviewController.remove));
+// Any signed-in account may report, including a vendor who sees an abusive
+// review on their own product — that is the main person who will notice.
+apiRouter.post('/reviews/:id/report', authenticate, validate(z.object({params:idParams,body:z.object({reason:z.string().min(5).max(500)})})), asyncHandler(reviewController.report));
 apiRouter.post('/analytics/product-events', searchLimiter, validate(z.object({body:z.object({eventKey:z.string().uuid(),type:z.enum(['IMPRESSION','VIEW','SEARCH_CLICK','WISHLIST_ADD','WISHLIST_REMOVE','ADD_TO_CART','REMOVE_FROM_CART','CHECKOUT_STARTED']),productId:z.string().min(1),variantId:z.string().min(1).optional(),sessionId:z.string().min(8).max(100),district:z.enum(JharkhandDistrict).optional(),source:z.string().max(80).optional(),searchQuery:z.string().max(160).optional(),device:z.enum(['mobile','tablet','desktop']).optional(),quantity:z.number().int().positive().max(100).optional(),price:z.number().positive().optional()})})), asyncHandler(productAnalyticsController.ingest));
 
 apiRouter.post('/auth/register', authLimiter, validate(z.object({ body: registerSchema })), asyncHandler(authController.registerController));
@@ -142,6 +161,10 @@ apiRouter.get('/admin/audit-log', authenticate, authorize(UserRole.ADMIN), async
 // service converts to the fraction checkout multiplies by, so a UI bug cannot
 // write 1000% into the column. Every field is re-validated in admin-coupon.
 const couponBody = z.object({code:z.string().min(3).max(24),percent:z.number().positive().max(90),maxDiscount:z.number().positive(),minOrderValue:z.number().min(0),startsAt:z.string(),expiresAt:z.string(),usageLimit:z.number().int().positive().nullable(),perUserLimit:z.number().int().positive(),isActive:z.boolean()});
+apiRouter.get('/admin/reviews', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.reviews));
+apiRouter.get('/admin/reviews/counts', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.reviewCounts));
+apiRouter.post('/admin/reviews/:id/hide', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({hidden:z.boolean(),reason:z.string().max(500).optional()})})), asyncHandler(adminController.setReviewHidden));
+apiRouter.post('/admin/reviews/:id/dismiss-reports', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.dismissReviewReports));
 apiRouter.get('/admin/coupons', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.coupons));
 apiRouter.post('/admin/coupons', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:couponBody})), asyncHandler(adminController.createCoupon));
 apiRouter.put('/admin/coupons/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:couponBody})), asyncHandler(adminController.updateCoupon));

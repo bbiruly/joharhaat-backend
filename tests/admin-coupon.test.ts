@@ -15,7 +15,7 @@ const valid = {
   minOrderValue: 500,
   startsAt: '2026-01-01T00:00:00Z',
   expiresAt: '2026-12-31T00:00:00Z',
-  usageLimit: 100,
+  usageLimit: 100 as number | null,
   perUserLimit: 1,
   isActive: true,
 };

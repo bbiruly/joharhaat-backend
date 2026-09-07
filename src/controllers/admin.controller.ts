@@ -5,6 +5,7 @@ import * as adminCustomer from '../services/admin-customer.service.js';
 import * as adminTransaction from '../services/admin-transaction.service.js';
 import * as adminAudit from '../services/admin-audit.service.js';
 import * as adminCoupon from '../services/admin-coupon.service.js';
+import * as adminReview from '../services/admin-review.service.js';
 
 export const analytics: RequestHandler = async (req, res) => res.json({ data: await admin.analytics(req.auth!.userId, Number(req.query.months ?? 6)) });
 export const haats: RequestHandler = async (req, res) => res.json({ data: await admin.listHaats(req.auth!.userId) });
@@ -35,6 +36,10 @@ export const revokeCustomerSessions: RequestHandler = async (req, res) => res.js
 export const transactions: RequestHandler = async (req, res) => res.json({ data: await adminTransaction.transactions(req.auth!.userId, req.query) });
 export const auditLog: RequestHandler = async (req, res) => res.json({ data: await adminAudit.auditLog(req.auth!.userId, req.query) });
 export const auditFilters: RequestHandler = async (req, res) => res.json({ data: await adminAudit.auditFilters(req.auth!.userId) });
+export const reviews: RequestHandler = async (req, res) => res.json({ data: await adminReview.reviews(req.auth!.userId, req.query) });
+export const reviewCounts: RequestHandler = async (req, res) => res.json({ data: await adminReview.reviewCounts(req.auth!.userId) });
+export const setReviewHidden: RequestHandler = async (req, res) => res.json({ data: await adminReview.setReviewHidden(req.auth!.userId, String(req.params.id), Boolean(req.body.hidden), req.body.reason, req.requestId) });
+export const dismissReviewReports: RequestHandler = async (req, res) => res.json({ data: await adminReview.dismissReports(req.auth!.userId, String(req.params.id), req.requestId) });
 export const coupons: RequestHandler = async (req, res) => res.json({ data: await adminCoupon.coupons(req.auth!.userId, req.query) });
 export const createCoupon: RequestHandler = async (req, res) => res.status(201).json({ data: await adminCoupon.createCoupon(req.auth!.userId, req.requestId, req.body) });
 export const updateCoupon: RequestHandler = async (req, res) => res.json({ data: await adminCoupon.updateCoupon(req.auth!.userId, String(req.params.id), req.requestId, req.body) });
