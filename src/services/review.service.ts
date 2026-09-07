@@ -36,9 +36,15 @@ export function assertReviewInput(input: ReviewInput) {
   const media = input.media ?? [];
   if (media.length > MAX_PHOTOS)
     throw new ApiError(422, `You can add up to ${MAX_PHOTOS} photos.`, 'REVIEW_TOO_MANY_PHOTOS');
-  for (const item of media)
+  for (const item of media) {
     if (!item.objectKey || !item.url)
       throw new ApiError(422, 'A photo failed to upload. Remove it and try again.', 'REVIEW_MEDIA_INVALID');
+    // objectKey and url arrive from the browser. Only a key minted by the
+    // review presign endpoint is acceptable — otherwise a crafted request could
+    // attach any object in the bucket, or any URL at all, to a review.
+    if (!item.objectKey.startsWith('review/'))
+      throw new ApiError(422, 'That photo was not uploaded through this form.', 'REVIEW_MEDIA_INVALID');
+  }
 
   return { body: body || null, media };
 }

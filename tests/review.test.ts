@@ -35,6 +35,20 @@ describe('review input', () => {
   it('caps the body length', () =>
     expect(codeOf({ rating: 4, body: 'x'.repeat(2001) })).toBe('REVIEW_BODY_TOO_LONG'));
 
+  /**
+   * objectKey and url arrive from the browser inside the review body. Without
+   * this, a crafted request could attach any object in the bucket — a KYC
+   * certificate, another vendor's product photo — or any URL at all.
+   */
+  it('only accepts a photo key minted by the review presign endpoint', () => {
+    const foreign = (objectKey: string) =>
+      codeOf({ rating: 4, media: [{ objectKey, url: 'https://cdn.test/a.jpg', altText: 'a' }] });
+    expect(foreign('msme/abc-cert.pdf')).toBe('REVIEW_MEDIA_INVALID');
+    expect(foreign('product/abc-photo.jpg')).toBe('REVIEW_MEDIA_INVALID');
+    expect(foreign('../../etc/passwd')).toBe('REVIEW_MEDIA_INVALID');
+    expect(foreign('review/abc-photo.jpg')).toBeNull();
+  });
+
   it('caps the number of photos and rejects a half-uploaded one', () => {
     const photo = { objectKey: 'k', url: 'https://cdn.test/a.jpg', altText: 'a' };
     expect(codeOf({ rating: 4, media: Array.from({ length: 6 }, () => photo) })).toBe(

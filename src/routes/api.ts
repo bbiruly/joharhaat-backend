@@ -79,6 +79,7 @@ const reviewBody = z.object({rating:z.number().int().min(1).max(5),body:z.string
 apiRouter.get('/products/:id/reviews', validate(z.object({ params: idParams })), asyncHandler(reviewController.listForProduct));
 apiRouter.get('/products/:id/rating', validate(z.object({ params: idParams })), asyncHandler(reviewController.ratingFor));
 apiRouter.get('/orders/:id/reviewable', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ params: idParams })), asyncHandler(reviewController.reviewable));
+apiRouter.post('/reviews/uploads/presign', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('review') }) })), asyncHandler(vendorController.presignUpload));
 apiRouter.post('/reviews', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({body:reviewBody.extend({productId:z.string().min(1),orderId:z.string().min(1)})})), asyncHandler(reviewController.create));
 apiRouter.put('/reviews/:id', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({params:idParams,body:reviewBody})), asyncHandler(reviewController.update));
 apiRouter.delete('/reviews/:id', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({params:idParams})), asyncHandler(reviewController.remove));
