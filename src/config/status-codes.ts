@@ -323,6 +323,25 @@ export const ADMIN_EVENTS = entry({
     en: 'Cart recovery reminder prepared',
     hi: 'कार्ट रिमाइंडर तैयार किया गया',
   },
+  // No `category` on these three: AdminNotificationCategory has no MARKETING
+  // member, and coupon changes do not raise an operator notification. They are
+  // audit events only.
+  COUPON_CREATED: {
+    code: 'A013',
+    en: 'Coupon created',
+    hi: 'कूपन बनाया गया',
+  },
+  COUPON_UPDATED: {
+    code: 'A014',
+    en: 'Coupon updated',
+    hi: 'कूपन बदला गया',
+  },
+  COUPON_DELETED: {
+    code: 'A015',
+    en: 'Coupon deleted',
+    hi: 'कूपन हटाया गया',
+    severity: AdminNotificationSeverity.WARNING,
+  },
 });
 
 /* ------------------------------------------------------------------ lookup */

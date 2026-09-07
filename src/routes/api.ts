@@ -138,6 +138,14 @@ apiRouter.get('/admin/payouts', authenticate, authorize(UserRole.ADMIN), asyncHa
 // previousState/nextState snapshots of team and customer records. The service
 // gates it on team:manage, which by default only SUPER_ADMIN holds.
 apiRouter.get('/admin/audit-log', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.auditLog));
+// Coupons. `percent` crosses the wire as a human percentage (10 = 10%); the
+// service converts to the fraction checkout multiplies by, so a UI bug cannot
+// write 1000% into the column. Every field is re-validated in admin-coupon.
+const couponBody = z.object({code:z.string().min(3).max(24),percent:z.number().positive().max(90),maxDiscount:z.number().positive(),minOrderValue:z.number().min(0),startsAt:z.string(),expiresAt:z.string(),usageLimit:z.number().int().positive().nullable(),perUserLimit:z.number().int().positive(),isActive:z.boolean()});
+apiRouter.get('/admin/coupons', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.coupons));
+apiRouter.post('/admin/coupons', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:couponBody})), asyncHandler(adminController.createCoupon));
+apiRouter.put('/admin/coupons/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:couponBody})), asyncHandler(adminController.updateCoupon));
+apiRouter.delete('/admin/coupons/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.deleteCoupon));
 apiRouter.get('/admin/audit-log/filters', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.auditFilters));
 apiRouter.get('/admin/customers', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.customers));
 apiRouter.get('/admin/customers/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.customer));

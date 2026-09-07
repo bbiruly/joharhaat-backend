@@ -4,6 +4,7 @@ import * as admin from '../services/admin.service.js';
 import * as adminCustomer from '../services/admin-customer.service.js';
 import * as adminTransaction from '../services/admin-transaction.service.js';
 import * as adminAudit from '../services/admin-audit.service.js';
+import * as adminCoupon from '../services/admin-coupon.service.js';
 
 export const analytics: RequestHandler = async (req, res) => res.json({ data: await admin.analytics(req.auth!.userId, Number(req.query.months ?? 6)) });
 export const haats: RequestHandler = async (req, res) => res.json({ data: await admin.listHaats(req.auth!.userId) });
@@ -34,6 +35,10 @@ export const revokeCustomerSessions: RequestHandler = async (req, res) => res.js
 export const transactions: RequestHandler = async (req, res) => res.json({ data: await adminTransaction.transactions(req.auth!.userId, req.query) });
 export const auditLog: RequestHandler = async (req, res) => res.json({ data: await adminAudit.auditLog(req.auth!.userId, req.query) });
 export const auditFilters: RequestHandler = async (req, res) => res.json({ data: await adminAudit.auditFilters(req.auth!.userId) });
+export const coupons: RequestHandler = async (req, res) => res.json({ data: await adminCoupon.coupons(req.auth!.userId, req.query) });
+export const createCoupon: RequestHandler = async (req, res) => res.status(201).json({ data: await adminCoupon.createCoupon(req.auth!.userId, req.requestId, req.body) });
+export const updateCoupon: RequestHandler = async (req, res) => res.json({ data: await adminCoupon.updateCoupon(req.auth!.userId, String(req.params.id), req.requestId, req.body) });
+export const deleteCoupon: RequestHandler = async (req, res) => res.json({ data: await adminCoupon.deleteCoupon(req.auth!.userId, String(req.params.id), req.requestId) });
 export const transaction: RequestHandler = async (req, res) => res.json({ data: await adminTransaction.transaction(req.auth!.userId, String(req.params.id)) });
 export const createTeamMember: RequestHandler = async (req, res) => res.status(201).json({ data: await admin.createTeamMember(req.auth!.userId, req.requestId, { email: req.body.email, role: req.body.role as AdminTeamRole }) });
 export const removeTeamMember: RequestHandler = async (req, res) => res.json({ data: await admin.removeTeamMember(req.auth!.userId, req.requestId, String(req.params.id)) });
