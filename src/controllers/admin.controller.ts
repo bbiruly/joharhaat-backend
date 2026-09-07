@@ -3,6 +3,7 @@ import { AdminTeamRole, FulfillmentStatus, ModerationStatus } from '../generated
 import * as admin from '../services/admin.service.js';
 import * as adminCustomer from '../services/admin-customer.service.js';
 import * as adminTransaction from '../services/admin-transaction.service.js';
+import * as adminAudit from '../services/admin-audit.service.js';
 
 export const analytics: RequestHandler = async (req, res) => res.json({ data: await admin.analytics(req.auth!.userId, Number(req.query.months ?? 6)) });
 export const haats: RequestHandler = async (req, res) => res.json({ data: await admin.listHaats(req.auth!.userId) });
@@ -31,6 +32,8 @@ export const customers: RequestHandler = async (req, res) => res.json({ data: aw
 export const customer: RequestHandler = async (req, res) => res.json({ data: await adminCustomer.customer(req.auth!.userId, String(req.params.id)) });
 export const revokeCustomerSessions: RequestHandler = async (req, res) => res.json({ data: await adminCustomer.revokeCustomerSessions(req.auth!.userId, req.requestId, String(req.params.id)) });
 export const transactions: RequestHandler = async (req, res) => res.json({ data: await adminTransaction.transactions(req.auth!.userId, req.query) });
+export const auditLog: RequestHandler = async (req, res) => res.json({ data: await adminAudit.auditLog(req.auth!.userId, req.query) });
+export const auditFilters: RequestHandler = async (req, res) => res.json({ data: await adminAudit.auditFilters(req.auth!.userId) });
 export const transaction: RequestHandler = async (req, res) => res.json({ data: await adminTransaction.transaction(req.auth!.userId, String(req.params.id)) });
 export const createTeamMember: RequestHandler = async (req, res) => res.status(201).json({ data: await admin.createTeamMember(req.auth!.userId, req.requestId, { email: req.body.email, role: req.body.role as AdminTeamRole }) });
 export const removeTeamMember: RequestHandler = async (req, res) => res.json({ data: await admin.removeTeamMember(req.auth!.userId, req.requestId, String(req.params.id)) });

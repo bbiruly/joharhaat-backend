@@ -2,7 +2,7 @@ import { AdminTeamRole, FulfillmentStatus, JharkhandDistrict, LedgerType, Modera
 import { COMMERCE } from '../config/constants.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
-import { codeOf } from '../config/status-codes.js';
+import { codeOf, type StatusEvent } from '../config/status-codes.js';
 import { env } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 import { pagination } from '../utils/pagination.js';
@@ -396,6 +396,20 @@ export async function removeTeamMember(
   });
 }
 
+/** Moderation decision -> the registry event its audit row records. */
+const VENDOR_AUDIT_EVENT = {
+  APPROVED: 'APPLICATION_APPROVED',
+  REJECTED: 'APPLICATION_REJECTED',
+  HOLD: 'APPLICATION_HELD',
+  PENDING: 'APPLICATION_SUBMITTED',
+} as const satisfies Record<string, StatusEvent>;
+
+const PRODUCT_AUDIT_EVENT = {
+  APPROVE: 'PRODUCT_APPROVED',
+  REJECT: 'PRODUCT_REJECTED',
+  SUSPEND: 'PRODUCT_SUSPENDED',
+} as const satisfies Record<string, StatusEvent>;
+
 /**
  * A SUPER_ADMIN may not be disabled or demoted through the API, by anyone —
  * including another SUPER_ADMIN and including themselves. Losing every
@@ -559,7 +573,10 @@ export async function moderate(actorId: string, requestId: string | undefined, i
       const certificate = application.documents.find((document) => document.category === 'MSME');
       await tx.vendor.upsert({ where: { ownerId: owner.id }, update: { verificationStatus: VerificationStatus.VERIFIED }, create: { ownerId: owner.id, businessName: application.collectiveName, district: application.district, region: application.district.replaceAll('_', ' '), msmeNumber: application.msmeNumber, msmeCertificateUrl: certificate?.objectKey ?? 'metadata-unavailable', verificationStatus: VerificationStatus.VERIFIED } });
     }
-    await tx.adminAuditLog.create({ data: { actorId, action: `VENDOR_${status}`, entityType: 'VendorApplication', entityId: id, requestId: requestId ?? null, metadata: reason ? { reason } : Prisma.JsonNull } });
+    // Registry code, not `VENDOR_${status}`: the audit table is queried and
+    // filtered by `action`, so a second naming convention makes half the
+    // history invisible to any filter built on the other one.
+    await tx.adminAuditLog.create({ data: { actorId, action: codeOf(VENDOR_AUDIT_EVENT[status]), entityType: 'VendorApplication', entityId: id, requestId: requestId ?? null, metadata: reason ? { reason } : Prisma.JsonNull } });
     return updated;
   });
 }
@@ -580,7 +597,7 @@ export async function moderateProduct(actorId: string, requestId: string | undef
     if (product.lifecycleStatus === target) return product;
     if (decision === 'APPROVE' && (!product.variants.length || !product.media.length)) throw new ApiError(422, 'A product needs at least one variant and photo before approval.', 'PRODUCT_INCOMPLETE');
     const updated = await tx.product.update({ where: { id }, data: { lifecycleStatus: target, isPublished: decision === 'APPROVE', moderationReason: reason?.trim() || null, reviewedAt: new Date(), reviewerId: actorId } });
-    await tx.adminAuditLog.create({ data: { actorId, action: `PRODUCT_${decision}`, entityType: 'Product', entityId: id, requestId: requestId ?? null, metadata: reason ? { reason } : Prisma.JsonNull } });
+    await tx.adminAuditLog.create({ data: { actorId, action: codeOf(PRODUCT_AUDIT_EVENT[decision]), entityType: 'Product', entityId: id, requestId: requestId ?? null, metadata: reason ? { reason } : Prisma.JsonNull } });
     return updated;
   });
 }

@@ -134,6 +134,11 @@ apiRouter.get('/admin/orders', authenticate, authorize(UserRole.ADMIN), asyncHan
 apiRouter.post('/admin/orders/:id/correct-status', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({status:z.enum(['PENDING','PACKED','SHIPPED','DELIVERED','RTO','CANCELLED']),reason:z.string().trim().min(5).max(1000)})})), asyncHandler(adminController.correctOrderStatus));
 apiRouter.get('/admin/payouts', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.payouts));
 
+// The audit trail is an access-control surface, not a report: the rows carry
+// previousState/nextState snapshots of team and customer records. The service
+// gates it on team:manage, which by default only SUPER_ADMIN holds.
+apiRouter.get('/admin/audit-log', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.auditLog));
+apiRouter.get('/admin/audit-log/filters', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.auditFilters));
 apiRouter.get('/admin/customers', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.customers));
 apiRouter.get('/admin/customers/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.customer));
 apiRouter.post('/admin/customers/:id/revoke-sessions', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.revokeCustomerSessions));
