@@ -319,6 +319,9 @@ export async function createTeamMember(
   const actor = await adminAccess(userId, 'team:manage');
   if (actor.role !== AdminTeamRole.SUPER_ADMIN)
     throw new ApiError(403, 'Only a SUPER_ADMIN can add admin members.', 'SUPER_ADMIN_REQUIRED');
+  // See assertTeamChangeAllowed: a minted SUPER_ADMIN could never be removed.
+  if (input.role === AdminTeamRole.SUPER_ADMIN)
+    throw new ApiError(422, 'SUPER_ADMIN cannot be granted from the admin panel.', 'SUPER_ADMIN_GRANT_FORBIDDEN');
 
   const account = await prisma.user.findUnique({
     where: { email: input.email.trim().toLowerCase() },
@@ -398,6 +401,13 @@ export async function removeTeamMember(
  * including another SUPER_ADMIN and including themselves. Losing every
  * SUPER_ADMIN would leave the permission matrix unmanageable with no way back
  * in, so that change is deliberately only possible directly in the database.
+ *
+ * The same rule has to run in the other direction. Because an existing
+ * SUPER_ADMIN can never be disabled or demoted here, letting the API *mint*
+ * one creates an account that nothing in the product can ever undo. The role
+ * picker stopped offering it, but the route schema still accepted it, so a
+ * hand-made request was enough. Granting SUPER_ADMIN is the database's job,
+ * exactly like removing it.
  */
 export function assertTeamChangeAllowed(input: {
   targetRole: AdminTeamRole;
@@ -409,6 +419,8 @@ export function assertTeamChangeAllowed(input: {
   const demoting = input.nextRole !== undefined && input.nextRole !== input.targetRole;
   if (input.targetRole === AdminTeamRole.SUPER_ADMIN && (disabling || demoting))
     throw new ApiError(422, 'A SUPER_ADMIN cannot be disabled or have their role changed from the admin panel.', 'SUPER_ADMIN_PROTECTED');
+  if (input.nextRole === AdminTeamRole.SUPER_ADMIN && input.targetRole !== AdminTeamRole.SUPER_ADMIN)
+    throw new ApiError(422, 'SUPER_ADMIN cannot be granted from the admin panel.', 'SUPER_ADMIN_GRANT_FORBIDDEN');
   if (input.targetIsSelf && disabling)
     throw new ApiError(422, 'You cannot disable your own admin access.', 'SELF_DISABLE_FORBIDDEN');
 }

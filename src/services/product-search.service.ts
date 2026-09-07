@@ -45,6 +45,10 @@ export async function searchProducts(input: ProductSearchInput) {
         vendor: { select: { id: true, businessName: true, shgGroupName: true, district: true } },
         weeklyHaat: { select: { id: true, name: true, day: true, isLive: true } },
         variants: { where: matchingVariant, orderBy: { price: 'asc' } },
+        // Cover first, then the vendor's own ordering. Without this the
+        // storefront has no product photos at all and the web app fell back
+        // to a hardcoded stock image.
+        media: { orderBy: [{ isCover: 'desc' }, { sortOrder: 'asc' }], select: { id: true, url: true, altText: true, isCover: true, sortOrder: true, width: true, height: true } },
       },
     }),
   ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
