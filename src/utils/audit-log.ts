@@ -28,6 +28,22 @@ export interface AuditEntry {
   metadata?: Prisma.InputJsonValue | undefined;
 }
 
+/**
+ * Write the audit row and emit the log line in one call.
+ *
+ * The two belong together — an admin action that reaches the table but not the
+ * log stream cannot be found by a log search, and one that reaches only the
+ * log leaves no durable record. Callers inside a transaction should use
+ * `auditRow` with their own `tx` instead and call `logAudit` after it commits.
+ */
+export async function writeAudit(
+  client: { adminAuditLog: { create: (args: { data: ReturnType<typeof auditRow> }) => Promise<unknown> } },
+  entry: AuditEntry,
+) {
+  await client.adminAuditLog.create({ data: auditRow(entry) });
+  logAudit(entry);
+}
+
 /** The row shape for `adminAuditLog.create({ data })`. */
 export function auditRow(entry: AuditEntry) {
   return {

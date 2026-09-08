@@ -33,6 +33,54 @@ describe('SUPER_ADMIN protection', () => {
     }
   });
 
+  /**
+   * The mirror of the rules above. Since a SUPER_ADMIN can never be disabled or
+   * demoted through the API, one created through it would be permanent — so
+   * granting the role has to be refused in the same place.
+   */
+  it('blocks promoting any other role INTO SUPER_ADMIN', () => {
+    for (const targetRole of [
+      AdminTeamRole.OPERATIONS,
+      AdminTeamRole.FINANCE,
+      AdminTeamRole.MARKETING,
+      AdminTeamRole.MODERATOR,
+    ]) {
+      try {
+        assertTeamChangeAllowed({
+          targetRole,
+          targetIsSelf: false,
+          nextRole: AdminTeamRole.SUPER_ADMIN,
+        });
+        expect.unreachable('should have thrown');
+      } catch (error) {
+        expect((error as ApiError).statusCode).toBe(422);
+        expect((error as ApiError).code).toBe('SUPER_ADMIN_GRANT_FORBIDDEN');
+      }
+    }
+  });
+
+  it('still allows a no-op re-save of an existing SUPER_ADMIN', () => {
+    // Sending the unchanged role back is not a grant, and PATCHing only
+    // isActive: true must not trip the new rule.
+    expect(() =>
+      assertTeamChangeAllowed({
+        targetRole: AdminTeamRole.SUPER_ADMIN,
+        targetIsSelf: false,
+        nextRole: AdminTeamRole.SUPER_ADMIN,
+      }),
+    ).not.toThrow();
+  });
+
+  it('still allows ordinary role changes between non-super roles', () => {
+    expect(() =>
+      assertTeamChangeAllowed({
+        targetRole: AdminTeamRole.OPERATIONS,
+        targetIsSelf: false,
+        nextRole: AdminTeamRole.FINANCE,
+      }),
+    ).not.toThrow();
+  });
+
   it('blocks a SUPER_ADMIN from demoting themselves', () => {
     expect(() =>
       assertTeamChangeAllowed({

@@ -6,6 +6,7 @@ import { checkoutController, checkoutQuoteController } from '../controllers/chec
 import * as authController from '../controllers/auth.controller.js';
 import * as customerController from '../controllers/customer.controller.js';
 import * as catalogController from '../controllers/catalog.controller.js';
+import * as reviewController from '../controllers/review.controller.js';
 import * as paymentController from '../controllers/payment.controller.js';
 import * as vendorController from '../controllers/vendor.controller.js';
 import * as adminController from '../controllers/admin.controller.js';
@@ -16,6 +17,7 @@ import { productSearchController } from '../controllers/product.controller.js';
 import { JharkhandDistrict, UserRole, WeeklyHaatDay } from '../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 import { authenticate } from '../middleware/authenticate.js';
+import { optionalSystemKey } from '../middleware/system-key.js';
 import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import { checkoutBodySchema, checkoutHeadersSchema, checkoutQuoteBodySchema } from '../schemas/checkout.schema.js';
@@ -38,6 +40,22 @@ const writeLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: '
 const productInput = z.object({ name: z.string().trim().min(3).max(160), slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), description: z.string().trim().min(20).max(3000), artisanStory: z.string().trim().min(40).max(3000).optional(), categoryId: z.string().min(1), district: z.enum(JharkhandDistrict), weeklyHaatDay: z.enum(WeeklyHaatDay), materials: z.string().trim().max(500).optional(), dimensions: z.string().trim().max(200).optional(), careInstructions: z.string().trim().max(1000).optional(), dispatchEstimate: z.string().trim().max(160).optional(), returnPolicy: z.string().trim().max(1000).optional(), submitForReview: z.boolean().optional(), variants: z.array(z.object({ sku: z.string().trim().min(3).max(80), label: z.string().trim().min(1).max(60), price: z.number().positive().max(1_000_000), stock: z.number().int().nonnegative().max(1_000_000) })).min(1).max(25), media: z.array(z.object({ objectKey: z.string().startsWith('product/'), url: z.string().url(), mimeType: z.enum(['image/jpeg','image/png','image/webp']), altText: z.string().trim().min(3).max(200), sortOrder: z.number().int().nonnegative(), isCover: z.boolean(), width: z.number().int().positive().optional(), height: z.number().int().positive().optional() })).max(8).optional() });
 const applicationInput = z.object({ idempotencyKey: z.string().min(8).max(128), ownerName: z.string().trim().min(2).max(100), collectiveName: z.string().trim().min(2).max(160), email: z.string().email(), mobile: z.string().regex(/^[6-9]\d{9}$/), district: z.enum(JharkhandDistrict), category: z.string().min(2).max(80), msmeNumber: z.string().regex(/^UDYAM-[A-Z]{2}-\d{2}-\d{7}$/), phoneVerified: z.literal(true), aadhaarVerified: z.literal(true), accountHolderName: z.string().min(2).max(100), bankLastFour: z.string().regex(/^\d{4}$/), ifsc: z.string().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/), verificationReference: z.string().max(160).optional(), story: z.string().min(80).max(1500), msmeCertificate: z.object({ objectKey: z.string().startsWith('msme/'), fileName: z.string().min(1).max(120), mimeType: z.enum(['application/pdf','image/jpeg','image/png']), size: z.number().int().positive().max(5_000_000) }) });
 
+/**
+ * Haat input. saveHaat used to receive `any` and spread it straight into
+ * prisma.weeklyHaat.create/update, so a caller could set any column on the
+ * table — isLive included. The whitelist is the fix; the shape is also what
+ * the admin UI already sends.
+ */
+const haatInput = z.object({
+  name: z.string().trim().min(2).max(120),
+  district: z.enum(JharkhandDistrict),
+  day: z.enum(WeeklyHaatDay),
+  /** 24-hour HH:MM. Compared as strings by saveHaat, so zero-padding matters. */
+  opensAt: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  closesAt: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  isEnabled: z.boolean().optional(),
+});
+
 apiRouter.get('/health/live', (_request, response) => response.json({ status: 'ok' }));
 apiRouter.get('/health/ready', asyncHandler(async (_request, response) => {
   await prisma.$queryRaw`SELECT 1`;
@@ -49,6 +67,25 @@ apiRouter.get('/categories', asyncHandler(catalogController.categories));
 apiRouter.get('/districts', asyncHandler(catalogController.districts));
 apiRouter.get('/haats', asyncHandler(catalogController.haats));
 apiRouter.get('/products/:id', validate(z.object({ params: idParams })), asyncHandler(catalogController.product));
+
+/* -------------------------------------------------------------- reviews ---
+ * Reading is public. Writing requires a DELIVERED order that contained the
+ * product — review.service.assertCanReview is the gate, not the role, which is
+ * what makes "Verified buyer" a fact rather than a label. Reporting is open to
+ * any signed-in account so publish-immediately stays safe.
+ * ------------------------------------------------------------------------- */
+const reviewMedia = z.array(z.object({objectKey:z.string().min(1),url:z.string().url(),altText:z.string().max(200)})).max(5).optional();
+const reviewBody = z.object({rating:z.number().int().min(1).max(5),body:z.string().max(2000).optional(),media:reviewMedia});
+apiRouter.get('/products/:id/reviews', validate(z.object({ params: idParams })), asyncHandler(reviewController.listForProduct));
+apiRouter.get('/products/:id/rating', validate(z.object({ params: idParams })), asyncHandler(reviewController.ratingFor));
+apiRouter.get('/orders/:id/reviewable', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ params: idParams })), asyncHandler(reviewController.reviewable));
+apiRouter.post('/reviews/uploads/presign', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('review') }) })), asyncHandler(vendorController.presignUpload));
+apiRouter.post('/reviews', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({body:reviewBody.extend({productId:z.string().min(1),orderId:z.string().min(1)})})), asyncHandler(reviewController.create));
+apiRouter.put('/reviews/:id', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({params:idParams,body:reviewBody})), asyncHandler(reviewController.update));
+apiRouter.delete('/reviews/:id', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({params:idParams})), asyncHandler(reviewController.remove));
+// Any signed-in account may report, including a vendor who sees an abusive
+// review on their own product — that is the main person who will notice.
+apiRouter.post('/reviews/:id/report', authenticate, validate(z.object({params:idParams,body:z.object({reason:z.string().min(5).max(500)})})), asyncHandler(reviewController.report));
 apiRouter.post('/analytics/product-events', searchLimiter, validate(z.object({body:z.object({eventKey:z.string().uuid(),type:z.enum(['IMPRESSION','VIEW','SEARCH_CLICK','WISHLIST_ADD','WISHLIST_REMOVE','ADD_TO_CART','REMOVE_FROM_CART','CHECKOUT_STARTED']),productId:z.string().min(1),variantId:z.string().min(1).optional(),sessionId:z.string().min(8).max(100),district:z.enum(JharkhandDistrict).optional(),source:z.string().max(80).optional(),searchQuery:z.string().max(160).optional(),device:z.enum(['mobile','tablet','desktop']).optional(),quantity:z.number().int().positive().max(100).optional(),price:z.number().positive().optional()})})), asyncHandler(productAnalyticsController.ingest));
 
 apiRouter.post('/auth/register', authLimiter, validate(z.object({ body: registerSchema })), asyncHandler(authController.registerController));
@@ -80,8 +117,8 @@ apiRouter.post('/checkout/quote', authenticate, authorize(UserRole.CUSTOMER), va
 apiRouter.post('/checkout', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ body: checkoutBodySchema, headers: checkoutHeadersSchema.passthrough() })), asyncHandler(checkoutController));
 apiRouter.post('/payments/intents', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ headers: checkoutHeadersSchema.passthrough(), body: z.object({ orderId: z.string().min(1), method: z.enum(['UPI','CARD','COD']) }) })), asyncHandler(paymentController.createIntent));
 apiRouter.post('/payments/intents/:id/confirm', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ params: idParams, body: z.object({ outcome: z.enum(['success','failure','cancel']) }) })), asyncHandler(paymentController.confirmIntent));
-apiRouter.get('/payments/orders/:orderId/state', authenticate, authorize(UserRole.CUSTOMER), asyncHandler(paymentController.paymentState));
-apiRouter.post('/payments/mock-webhook', asyncHandler(paymentController.webhook));
+apiRouter.get('/payments/orders/:orderId/state', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({params:z.object({orderId:z.string().min(1)})})), asyncHandler(paymentController.paymentState));
+apiRouter.post('/payments/mock-webhook', validate(z.object({body:z.object({userId:z.string().min(1),intentId:z.string().min(1),status:z.enum(['CREATED','PROCESSING','SUCCEEDED','FAILED','CANCELLED','EXPIRED']),eventKey:z.string().min(1).max(200).optional()})})), asyncHandler(paymentController.webhook));
 
 apiRouter.post('/uploads/presign', validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('msme') }) })), asyncHandler(vendorController.presignUpload));
 apiRouter.post('/uploads/confirm', validate(z.object({ body: z.object({ objectKey: z.string().min(1) }) })), asyncHandler(vendorController.confirmUpload));
@@ -112,11 +149,28 @@ apiRouter.get('/admin/search-insights', authenticate, authorize(UserRole.ADMIN),
 apiRouter.get('/admin/inventory-intelligence', authenticate, authorize(UserRole.ADMIN), asyncHandler(advancedAnalyticsController.inventory));
 apiRouter.get('/admin/district-analytics', authenticate, authorize(UserRole.ADMIN), asyncHandler(advancedAnalyticsController.districts));
 apiRouter.get('/admin/product-analytics-export.csv', authenticate, authorize(UserRole.ADMIN), asyncHandler(advancedAnalyticsController.csv));
-apiRouter.post('/system/analytics/aggregate', authenticate, authorize(UserRole.SYSTEM), asyncHandler(advancedAnalyticsController.aggregate));
+apiRouter.post('/system/analytics/aggregate', optionalSystemKey, authenticate, authorize(UserRole.SYSTEM), asyncHandler(advancedAnalyticsController.aggregate));
 apiRouter.get('/admin/orders', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.orders));
 apiRouter.post('/admin/orders/:id/correct-status', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({status:z.enum(['PENDING','PACKED','SHIPPED','DELIVERED','RTO','CANCELLED']),reason:z.string().trim().min(5).max(1000)})})), asyncHandler(adminController.correctOrderStatus));
 apiRouter.get('/admin/payouts', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.payouts));
 
+// The audit trail is an access-control surface, not a report: the rows carry
+// previousState/nextState snapshots of team and customer records. The service
+// gates it on team:manage, which by default only SUPER_ADMIN holds.
+apiRouter.get('/admin/audit-log', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.auditLog));
+// Coupons. `percent` crosses the wire as a human percentage (10 = 10%); the
+// service converts to the fraction checkout multiplies by, so a UI bug cannot
+// write 1000% into the column. Every field is re-validated in admin-coupon.
+const couponBody = z.object({code:z.string().min(3).max(24),percent:z.number().positive().max(90),maxDiscount:z.number().positive(),minOrderValue:z.number().min(0),startsAt:z.string(),expiresAt:z.string(),usageLimit:z.number().int().positive().nullable(),perUserLimit:z.number().int().positive(),isActive:z.boolean()});
+apiRouter.get('/admin/reviews', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.reviews));
+apiRouter.get('/admin/reviews/counts', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.reviewCounts));
+apiRouter.post('/admin/reviews/:id/hide', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({hidden:z.boolean(),reason:z.string().max(500).optional()})})), asyncHandler(adminController.setReviewHidden));
+apiRouter.post('/admin/reviews/:id/dismiss-reports', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.dismissReviewReports));
+apiRouter.get('/admin/coupons', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.coupons));
+apiRouter.post('/admin/coupons', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:couponBody})), asyncHandler(adminController.createCoupon));
+apiRouter.put('/admin/coupons/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:couponBody})), asyncHandler(adminController.updateCoupon));
+apiRouter.delete('/admin/coupons/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.deleteCoupon));
+apiRouter.get('/admin/audit-log/filters', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.auditFilters));
 apiRouter.get('/admin/customers', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.customers));
 apiRouter.get('/admin/customers/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.customer));
 apiRouter.post('/admin/customers/:id/revoke-sessions', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.revokeCustomerSessions));
@@ -128,16 +182,19 @@ apiRouter.post('/admin/notifications/:id/read', authenticate, authorize(UserRole
 apiRouter.get('/admin/team', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.team));
 apiRouter.get('/admin/permissions', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.permissionMatrix));
 apiRouter.put('/admin/permissions', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:z.object({role:z.enum(['OPERATIONS','FINANCE','MARKETING','MODERATOR']),permissions:z.array(z.enum(['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','team:manage'])).max(8)})})), asyncHandler(adminController.setRolePermissions));
-apiRouter.post('/admin/team', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:z.object({email:z.string().email(),role:z.enum(['SUPER_ADMIN','OPERATIONS','FINANCE','MARKETING','MODERATOR'])})})), asyncHandler(adminController.createTeamMember));
+// SUPER_ADMIN is absent from both team schemas on purpose: it can never be
+// disabled or demoted through the API, so one granted here would be permanent.
+// admin.service refuses it again — this is the outer of the two gates.
+apiRouter.post('/admin/team', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:z.object({email:z.string().email(),role:z.enum(['OPERATIONS','FINANCE','MARKETING','MODERATOR'])})})), asyncHandler(adminController.createTeamMember));
 apiRouter.delete('/admin/team/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.removeTeamMember));
-apiRouter.patch('/admin/team/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({role:z.enum(['SUPER_ADMIN','OPERATIONS','FINANCE','MARKETING','MODERATOR']).optional(),isActive:z.boolean().optional()})})), asyncHandler(adminController.updateTeamMember));
+apiRouter.patch('/admin/team/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({role:z.enum(['OPERATIONS','FINANCE','MARKETING','MODERATOR']).optional(),isActive:z.boolean().optional()})})), asyncHandler(adminController.updateTeamMember));
 apiRouter.get('/admin/haats', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.haats));
-apiRouter.post('/admin/haats', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.saveHaat));
-apiRouter.put('/admin/haats/:id', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.saveHaat));
-apiRouter.patch('/admin/haats/:id/toggle', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.toggleHaat));
-apiRouter.post('/admin/haats/:id/live', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.liveHaat));
+apiRouter.post('/admin/haats', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:haatInput})), asyncHandler(adminController.saveHaat));
+apiRouter.put('/admin/haats/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:haatInput})), asyncHandler(adminController.saveHaat));
+apiRouter.patch('/admin/haats/:id/toggle', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({enabled:z.boolean()})})), asyncHandler(adminController.toggleHaat));
+apiRouter.post('/admin/haats/:id/live', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({liveUntil:z.iso.datetime()})})), asyncHandler(adminController.liveHaat));
 apiRouter.get('/admin/abandoned-carts', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.abandonedCarts));
-apiRouter.post('/admin/abandoned-carts/:id/reminder-opened', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.reminderOpened));
+apiRouter.post('/admin/abandoned-carts/:id/reminder-opened', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.reminderOpened));
 apiRouter.get('/admin/vendor-applications', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.applications));
 apiRouter.post('/admin/vendor-applications/:id/moderate', authenticate, authorize(UserRole.ADMIN), validate(z.object({ params: idParams, body: z.object({ status: z.enum(['APPROVED','REJECTED','HOLD']), reason: z.string().trim().max(1000).optional() }) })), asyncHandler(adminController.moderate));
 apiRouter.get('/admin/products/moderation', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.productsForModeration));

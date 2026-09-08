@@ -45,8 +45,44 @@ export async function searchProducts(input: ProductSearchInput) {
         vendor: { select: { id: true, businessName: true, shgGroupName: true, district: true } },
         weeklyHaat: { select: { id: true, name: true, day: true, isLive: true } },
         variants: { where: matchingVariant, orderBy: { price: 'asc' } },
+        // Cover first, then the vendor's own ordering. Without this the
+        // storefront has no product photos at all and the web app fell back
+        // to a hardcoded stock image.
+        media: { orderBy: [{ isCover: 'desc' }, { sortOrder: 'asc' }], select: { id: true, url: true, altText: true, isCover: true, sortOrder: true, width: true, height: true } },
       },
     }),
   ], { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
-  return { items, page, pageSize, totalItems, totalPages: Math.ceil(totalItems / pageSize) };
+
+  // One aggregate for the whole page rather than a query per card. Hidden
+  // reviews are excluded, so a moderated review stops counting immediately.
+  const ratings = items.length
+    ? await prisma.review.groupBy({
+        by: ['productId'],
+        where: { productId: { in: items.map((item) => item.id) }, isHidden: false },
+        _avg: { rating: true },
+        _count: { _all: true },
+      })
+    : [];
+  const ratingByProduct = new Map(
+    ratings.map((row) => [
+      row.productId,
+      {
+        // null, not 0 — a product with no reviews has no rating, and 0 would
+        // render as a one-star product.
+        average: row._avg.rating === null ? null : Number(row._avg.rating.toFixed(2)),
+        count: row._count._all,
+      },
+    ]),
+  );
+
+  return {
+    items: items.map((item) => ({
+      ...item,
+      rating: ratingByProduct.get(item.id) ?? { average: null, count: 0 },
+    })),
+    page,
+    pageSize,
+    totalItems,
+    totalPages: Math.ceil(totalItems / pageSize),
+  };
 }

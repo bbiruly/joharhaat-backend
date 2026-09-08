@@ -223,6 +223,10 @@ model User {
   name                   String
   role                   UserRole                @default(CUSTOMER)
   isActive               Boolean                 @default(true) @map("is_active")
+  /// Per-account brute-force lockout. IP rate limiting alone does not stop a
+  /// distributed attempt against one account; these track the account itself.
+  failedLoginCount       Int                     @default(0) @map("failed_login_count")
+  lockedUntil            DateTime?               @map("locked_until")
   createdAt              DateTime                @default(now()) @map("created_at")
   updatedAt              DateTime                @updatedAt @map("updated_at")
   vendor                 Vendor?
@@ -241,6 +245,9 @@ model User {
   adminMembership        AdminMembership?
   adminNotificationReads AdminNotificationRead[]
   productAnalyticsEvents ProductAnalyticsEvent[]
+  reviews                Review[]
+  reviewReports          ReviewReport[]          @relation("ReviewReporter")
+  hiddenReviews          Review[]                @relation("ReviewHiddenBy")
 
   @@map("users")
 }
@@ -358,6 +365,7 @@ model Product {
   analyticsEvents  ProductAnalyticsEvent[]
   dailyAnalytics   ProductDailyAggregate[]
   healthSnapshots  ProductHealthSnapshot[]
+  reviews          Review[]
 
   @@index([isPublished, district, weeklyHaatDay])
   @@index([categoryId, isPublished, minPrice])
@@ -622,6 +630,7 @@ model Order {
   vendorOrders      VendorOrder[]
   paymentIntents    PaymentIntent[]
   couponRedemption  CouponRedemption?
+  reviews           Review[]
 
   @@index([customerId, createdAt])
   @@index([paymentStatus, createdAt])
@@ -1050,4 +1059,71 @@ model RolePermission {
   @@unique([role, permission])
   @@index([role])
   @@map("role_permissions")
+}
+
+/// A customer's review of a product they actually received.
+///
+/// `orderId` is not decoration: it is the entitlement. A review may only be
+/// written against a DELIVERED order that contained the product, which is what
+/// makes "Verified buyer" true rather than a label. The unique constraint is on
+/// the triple, so a customer who buys the same product twice may review it once
+/// per order — and never twice for the same one.
+model Review {
+  id           String         @id @default(cuid())
+  productId    String         @map("product_id")
+  userId       String         @map("user_id")
+  orderId      String         @map("order_id")
+  rating       Int
+  body         String?
+  /// Hidden reviews stay in the table. Removing the row would also remove the
+  /// evidence of why it was removed, and would silently change a product's
+  /// average with nothing recording that it happened.
+  isHidden     Boolean        @default(false) @map("is_hidden")
+  hiddenReason String?        @map("hidden_reason")
+  hiddenById   String?        @map("hidden_by_id")
+  hiddenAt     DateTime?      @map("hidden_at")
+  reportCount  Int            @default(0) @map("report_count")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+  product      Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user         User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  order        Order          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  hiddenBy     User?          @relation("ReviewHiddenBy", fields: [hiddenById], references: [id], onDelete: SetNull)
+  media        ReviewMedia[]
+  reports      ReviewReport[]
+
+  @@unique([productId, userId, orderId])
+  @@index([productId, isHidden, createdAt])
+  @@index([reportCount, isHidden])
+  @@map("reviews")
+}
+
+model ReviewMedia {
+  id        String   @id @default(cuid())
+  reviewId  String   @map("review_id")
+  objectKey String   @unique @map("object_key")
+  url       String
+  altText   String   @map("alt_text")
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  review    Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@index([reviewId, sortOrder])
+  @@map("review_media")
+}
+
+/// One report per person per review, enforced by the unique constraint, so
+/// `reportCount` cannot be inflated by one account clicking repeatedly.
+model ReviewReport {
+  id         String   @id @default(cuid())
+  reviewId   String   @map("review_id")
+  reporterId String   @map("reporter_id")
+  reason     String
+  createdAt  DateTime @default(now()) @map("created_at")
+  review     Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  reporter   User     @relation("ReviewReporter", fields: [reporterId], references: [id], onDelete: Restrict)
+
+  @@unique([reviewId, reporterId])
+  @@index([reviewId, createdAt])
+  @@map("review_reports")
 }

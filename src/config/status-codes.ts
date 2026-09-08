@@ -293,6 +293,71 @@ export const ADMIN_EVENTS = entry({
     en: 'Admin access restored',
     hi: 'एडमिन पहुँच बहाल की गई',
   },
+  TEAM_MEMBER_UPDATED: {
+    code: 'A008',
+    en: 'Admin member updated',
+    hi: 'एडमिन सदस्य अपडेट किया गया',
+  },
+  // Haats are marketplace configuration, but every change here is made by an
+  // admin, so they carry the admin-action prefix.
+  HAAT_SAVED: {
+    code: 'A009',
+    en: 'Haat schedule saved',
+    hi: 'हाट शेड्यूल सहेजा गया',
+    category: AdminNotificationCategory.HAAT,
+  },
+  HAAT_TOGGLED: {
+    code: 'A010',
+    en: 'Haat enabled or disabled',
+    hi: 'हाट चालू या बंद किया गया',
+    category: AdminNotificationCategory.HAAT,
+  },
+  HAAT_SET_LIVE: {
+    code: 'A011',
+    en: 'Haat set live',
+    hi: 'हाट लाइव किया गया',
+    category: AdminNotificationCategory.HAAT,
+  },
+  CART_REMINDER_PREPARED: {
+    code: 'A012',
+    en: 'Cart recovery reminder prepared',
+    hi: 'कार्ट रिमाइंडर तैयार किया गया',
+  },
+  // No `category` on these three: AdminNotificationCategory has no MARKETING
+  // member, and coupon changes do not raise an operator notification. They are
+  // audit events only.
+  COUPON_CREATED: {
+    code: 'A013',
+    en: 'Coupon created',
+    hi: 'कूपन बनाया गया',
+  },
+  COUPON_UPDATED: {
+    code: 'A014',
+    en: 'Coupon updated',
+    hi: 'कूपन बदला गया',
+  },
+  COUPON_DELETED: {
+    code: 'A015',
+    en: 'Coupon deleted',
+    hi: 'कूपन हटाया गया',
+    severity: AdminNotificationSeverity.WARNING,
+  },
+  REVIEW_HIDDEN: {
+    code: 'A016',
+    en: 'Review hidden by moderation',
+    hi: 'समीक्षा छिपाई गई',
+    severity: AdminNotificationSeverity.WARNING,
+  },
+  REVIEW_RESTORED: {
+    code: 'A017',
+    en: 'Review restored',
+    hi: 'समीक्षा वापस दिखाई गई',
+  },
+  REVIEW_REPORTS_DISMISSED: {
+    code: 'A018',
+    en: 'Review reports dismissed',
+    hi: 'समीक्षा की शिकायतें खारिज कीं',
+  },
 });
 
 /* ------------------------------------------------------------------ lookup */
