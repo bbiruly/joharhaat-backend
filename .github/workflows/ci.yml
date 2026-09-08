@@ -1,0 +1,122 @@
+name: CI
+
+# Runs on every pull request and on pushes to main.
+#
+# The PR trigger is the one that matters: branch protection is configured to
+# require this check, so a PR cannot be merged until it is green. See
+# docs/ci.md for the exact GitHub settings.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to the same PR cancels the run still in flight. Without this a
+# busy branch queues runs that are already answering a stale commit.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # `prisma generate` reads the datasource URL from prisma.config.ts even
+      # though it never connects. These are placeholders so CI needs no
+      # database and no secrets — a CI run that depends on a live database is
+      # a CI run that fails for reasons unrelated to the change.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      DIRECT_URL: postgresql://ci:ci@localhost:5432/ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        # --frozen-lockfile fails if package.json and the lockfile disagree,
+        # which is what stops a dependency drifting in without review.
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Validate Prisma schema
+        run: pnpm prisma:validate
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  migrations:
+    name: Migrations are complete
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # A schema edit without a matching migration passes every other check and
+    # then fails on deploy, against the production database. This catches it
+    # here instead, against a throwaway one.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      DIRECT_URL: postgresql://ci:ci@localhost:5432/ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations to an empty database
+        run: pnpm prisma:migrate:deploy
+
+      - name: Fail if the schema has drifted from the migrations
+        # --exit-code returns 2 when the migrated database and the schema
+        # disagree, which fails the step. Verified both ways locally: 0 on a
+        # clean tree, 2 when a column is added to the schema with no migration.
+        run: |
+          pnpm exec prisma migrate diff \
+            --from-config-datasource \
+            --to-schema prisma/schema.prisma \
+            --exit-code
