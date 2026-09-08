@@ -25,6 +25,24 @@ datasource URL from `prisma.config.ts` but never connects, so placeholders are
 enough. A pipeline that depends on a real database is a pipeline that goes red
 for reasons unrelated to the change.
 
+## Tests do not read your `.env`
+
+`src/config/env.ts` validates `process.env` at import time and throws without
+`DATABASE_URL`, `DIRECT_URL` and `JWT_SECRET`. It also does
+`import 'dotenv/config'`, so on a developer machine a local `.env` quietly
+satisfies that — and the suite appears to pass for a reason that does not exist
+on CI.
+
+It did exactly that on the first CI run: eleven test files import a service,
+the service imports `env.ts`, and with no `.env` in the runner the import threw
+before any test executed. Five files passed, eleven failed, and none of it was
+about the code under test.
+
+`vitest.config.ts` now sets those three values for the test run, so the suite is
+self-contained: it passes on CI, on a fresh clone, and for anyone who has never
+created a `.env`. To check that yourself, move your `.env` aside and run
+`pnpm test` — that, not a run on a configured laptop, is what CI will do.
+
 The same pipeline is one command locally:
 
 ```bash
