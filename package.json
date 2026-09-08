@@ -20,7 +20,9 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "lint": "oxlint src tests",
+    "verify": "pnpm prisma:generate && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.0",
@@ -47,6 +49,7 @@
     "@types/pg": "8.15.6",
     "@types/supertest": "6.0.3",
     "@types/swagger-ui-express": "^4.1.8",
+    "oxlint": "^1.81.0",
     "prisma": "7.10.0",
     "supertest": "7.1.4",
     "tsx": "4.21.0",

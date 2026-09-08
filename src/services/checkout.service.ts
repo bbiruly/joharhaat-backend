@@ -10,7 +10,7 @@ import { env } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
 import type { CheckoutInput } from '../schemas/checkout.schema.js';
 import { ApiError } from '../utils/api-error.js';
-import { allocateMoney, decimal, money, sumMoney } from '../utils/money.js';
+import { allocateMoney, money, sumMoney } from '../utils/money.js';
 
 const orderInclude = {
   vendorOrders: { include: { items: true, statusLogs: true } },
@@ -129,7 +129,11 @@ export async function processCheckout(customerId: string, idempotencyKey: string
     }
     const groups = [...groupedLines.entries()].map(([vendorId, vendorLines]) => ({ vendorId, lines: vendorLines, gmv: sumMoney(vendorLines.map((line) => line.lineTotal)) }));
     const weights = groups.map((group) => group.gmv);
-    const discounts = allocateMoney(totals.discount, weights);
+    // A coupon discount is deliberately NOT split across vendors: VendorOrder
+    // has no discount column, gmv stays the undiscounted line total and
+    // netVendorPayout is gmv minus commission. So the platform absorbs the
+    // whole discount and the maker is paid in full on what they sold. Changing
+    // that is a business decision, not a wiring fix.
     const cgstShares = allocateMoney(totals.cgst, weights);
     const sgstShares = allocateMoney(totals.sgst, weights);
     const courierShares = allocateMoney(totals.courier, weights);
