@@ -95,7 +95,7 @@ export async function forgotPassword(email: string): Promise<void> {
   const token = randomBytes(32).toString('base64url');
   await prisma.$transaction([
     prisma.passwordResetToken.create({ data: { userId: user.id, tokenHash: tokenHash(token), expiresAt: new Date(Date.now() + env.PASSWORD_RESET_MINUTES * 60_000) } }),
-    prisma.emailOutbox.create({ data: { recipient: email, subject: 'Reset your JoharHaat password', template: 'password-reset', payload: { token, expiresMinutes: env.PASSWORD_RESET_MINUTES } } }),
+    prisma.emailOutbox.create({ data: { recipient: email, subject: 'Reset your JoharHaat password', template: 'password-reset', payload: { token, expiresMinutes: env.PASSWORD_RESET_MINUTES, name: user.name } } }),
   ]);
 }
 

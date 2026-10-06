@@ -17,6 +17,13 @@ async function main(): Promise<void> {
     update: { verificationStatus: VerificationStatus.VERIFIED },
     create: { ownerId: vendorOwner.id, businessName: 'Khunti Van Dhan SHG', shgGroupName: 'Johar Sakhi Mandal', district: JharkhandDistrict.KHUNTI, region: 'South Chotanagpur', msmeNumber: 'UDYAM-JH-20-0000001', msmeCertificateUrl: 'https://example.test/mock-msme.pdf', verificationStatus: VerificationStatus.VERIFIED },
   });
+  const storefrontCategories = [
+    { slug: 'forest-foods', name: 'Forest Foods', nameHi: 'वन उपज', description: 'Honey, mahua, millets and forest produce', descriptionHi: 'शहद, महुआ, मोटा अनाज और वन उपज', displayOrder: 10 },
+    { slug: 'tribal-crafts', name: 'Tribal Crafts', nameHi: 'आदिवासी शिल्प', description: 'Dokra metalwork, bamboo, wood and stone', descriptionHi: 'ढोकरा धातु, बाँस, लकड़ी और पत्थर', displayOrder: 20 },
+    { slug: 'handloom', name: 'Handloom', nameHi: 'हथकरघा', description: 'Tussar silk, cotton weaves and tribal textiles', descriptionHi: 'तसर रेशम, सूती बुनाई और आदिवासी वस्त्र', displayOrder: 30 },
+    { slug: 'natural-wellness', name: 'Natural Wellness', nameHi: 'प्राकृतिक सेहत', description: 'Cold-pressed oils, herbs and traditional remedies', descriptionHi: 'तेल, जड़ी-बूटियाँ और पारंपरिक नुस्ख़े', displayOrder: 40 },
+  ];
+  for (const item of storefrontCategories) await prisma.category.upsert({ where: { slug: item.slug }, update: { ...item, isActive: true, isFeatured: true }, create: { ...item, isActive: true, isFeatured: true } });
   const category = await prisma.category.upsert({ where: { slug: 'organic-produce' }, update: {}, create: { slug: 'organic-produce', name: 'Organic Produce' } });
   const haat = await prisma.weeklyHaat.upsert({
     where: { district_day_name: { district: JharkhandDistrict.KHUNTI, day: WeeklyHaatDay.TUESDAY, name: 'Khunti Organic Haat' } },

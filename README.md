@@ -15,6 +15,10 @@ pnpm dev
 
 The API runs at `http://localhost:4000`, readiness is available at `/api/v1/health/ready`, and Swagger UI is at `/api/docs`.
 
+Production integrations (Razorpay UPI, S3/CloudFront and Resend) and the
+separate `pnpm start:worker` process are documented in
+`docs/production-integrations.md`. SMS and courier remain unavailable.
+
 ## Quality checks
 
 ```bash

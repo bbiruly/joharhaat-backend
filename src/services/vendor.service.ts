@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { FulfillmentStatus, JharkhandDistrict, ModerationStatus, PayoutRequestStatus, ProductLifecycleStatus, VerificationStatus, WeeklyHaatDay } from '../generated/prisma/client.js';
+import { FulfillmentStatus, JharkhandDistrict, ModerationStatus, PayoutRequestStatus, ProductLifecycleStatus, VerificationStatus } from '../generated/prisma/client.js';
 import { env } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 import { money } from '../utils/money.js';
+import { publicMediaUrl } from './storage.service.js';
 
 async function vendorFor(userId: string) { const vendor = await prisma.vendor.findUnique({ where: { ownerId: userId } }); if (!vendor || vendor.verificationStatus !== VerificationStatus.VERIFIED) throw new ApiError(403, 'A verified vendor account is required.', 'VENDOR_NOT_VERIFIED'); return vendor; }
 export async function dashboard(userId: string) {
@@ -21,14 +22,30 @@ export async function dashboard(userId: string) {
 
 export interface ProductInput {
   name: string; slug: string; description: string; artisanStory?: string; categoryId: string;
-  district: JharkhandDistrict; weeklyHaatDay: WeeklyHaatDay; materials?: string; dimensions?: string;
+  district?: JharkhandDistrict; weeklyHaatId?: string; materials?: string; dimensions?: string;
   careInstructions?: string; dispatchEstimate?: string; returnPolicy?: string;
   submitForReview?: boolean;
   variants: { sku: string; label: string; price: number; stock: number }[];
   media?: { objectKey: string; url: string; mimeType: string; altText: string; sortOrder: number; isCover: boolean; width?: number; height?: number }[];
 }
 
-const productInclude = { variants: true, category: true, media: { orderBy: { sortOrder: 'asc' as const } } };
+const productInclude = { variants: true, category: true, weeklyHaat: true, media: { orderBy: { sortOrder: 'asc' as const } } };
+
+export async function resolveProductPlacement(input: Pick<ProductInput, 'categoryId' | 'district' | 'weeklyHaatId'>) {
+  const [category, weeklyHaat] = await Promise.all([
+    prisma.category.findFirst({ where: { id: input.categoryId, isActive: true }, select: { id: true } }),
+    input.weeklyHaatId
+      ? prisma.weeklyHaat.findFirst({ where: { id: input.weeklyHaatId, isEnabled: true }, select: { id: true, day: true } })
+      : Promise.resolve(null),
+  ]);
+  if (!category) throw new ApiError(422, 'Select an active product category.', 'CATEGORY_UNAVAILABLE');
+  if (input.weeklyHaatId && !weeklyHaat) throw new ApiError(422, 'Select an enabled weekly Haat.', 'HAAT_UNAVAILABLE');
+  return {
+    district: input.district ?? null,
+    weeklyHaatId: weeklyHaat?.id ?? null,
+    weeklyHaatDay: weeklyHaat?.day ?? null,
+  };
+}
 
 export async function listProducts(userId: string) {
   const vendor = await vendorFor(userId);
@@ -48,9 +65,11 @@ export async function createProduct(userId: string, input: ProductInput) {
   if (new Set(input.variants.map((item) => item.sku.toUpperCase())).size !== input.variants.length) throw new ApiError(422, 'Every variant SKU must be unique.', 'DUPLICATE_SKU');
   const duplicate = await prisma.product.findFirst({ where: { vendorId: vendor.id, name: { equals: input.name, mode: 'insensitive' }, lifecycleStatus: { not: ProductLifecycleStatus.ARCHIVED } } });
   if (duplicate) throw new ApiError(409, 'A product with this name already exists. Edit or duplicate the existing listing.', 'DUPLICATE_PRODUCT');
+  const placement = await resolveProductPlacement(input);
   const minPrice = Math.min(...input.variants.map((item) => item.price));
   const lifecycleStatus = input.submitForReview ? ProductLifecycleStatus.PENDING_REVIEW : ProductLifecycleStatus.DRAFT;
-  return prisma.product.create({ data: { vendorId: vendor.id, categoryId: input.categoryId, name: input.name, slug: input.slug, description: input.description, artisanStory: input.artisanStory ?? null, district: input.district, weeklyHaatDay: input.weeklyHaatDay, minPrice, isPublished: false, lifecycleStatus, submittedAt: input.submitForReview ? new Date() : null, materials: input.materials ?? null, dimensions: input.dimensions ?? null, careInstructions: input.careInstructions ?? null, dispatchEstimate: input.dispatchEstimate ?? null, returnPolicy: input.returnPolicy ?? null, variants: { create: input.variants.map((item) => ({ ...item, sku: item.sku.toUpperCase(), lowStock: item.stock < env.LOW_STOCK_THRESHOLD })) }, ...(input.media?.length ? { media: { create: input.media } } : {}) }, include: productInclude });
+  const media = input.media?.map((item) => ({ ...item, url: publicMediaUrl(item.objectKey) }));
+  return prisma.product.create({ data: { vendorId: vendor.id, categoryId: input.categoryId, name: input.name, slug: input.slug, description: input.description, artisanStory: input.artisanStory ?? null, district: placement.district, weeklyHaatId: placement.weeklyHaatId, weeklyHaatDay: placement.weeklyHaatDay, minPrice, isPublished: false, lifecycleStatus, submittedAt: input.submitForReview ? new Date() : null, materials: input.materials ?? null, dimensions: input.dimensions ?? null, careInstructions: input.careInstructions ?? null, dispatchEstimate: input.dispatchEstimate ?? null, returnPolicy: input.returnPolicy ?? null, variants: { create: input.variants.map((item) => ({ ...item, sku: item.sku.toUpperCase(), lowStock: item.stock < env.LOW_STOCK_THRESHOLD })) }, ...(media?.length ? { media: { create: media } } : {}) }, include: productInclude });
 }
 
 export async function submitProduct(userId: string, id: string) {

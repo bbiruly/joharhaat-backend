@@ -46,7 +46,7 @@ describe('review input', () => {
     expect(foreign('msme/abc-cert.pdf')).toBe('REVIEW_MEDIA_INVALID');
     expect(foreign('product/abc-photo.jpg')).toBe('REVIEW_MEDIA_INVALID');
     expect(foreign('../../etc/passwd')).toBe('REVIEW_MEDIA_INVALID');
-    expect(foreign('review/abc-photo.jpg')).toBeNull();
+    expect(foreign('public/review/abc-photo.jpg')).toBeNull();
   });
 
   it('caps the number of photos and rejects a half-uploaded one', () => {

@@ -2,6 +2,7 @@ import { FulfillmentStatus, Prisma } from '../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 import { pagination } from '../utils/pagination.js';
+import { publicMediaUrl } from './storage.service.js';
 
 /**
  * Product reviews.
@@ -42,7 +43,7 @@ export function assertReviewInput(input: ReviewInput) {
     // objectKey and url arrive from the browser. Only a key minted by the
     // review presign endpoint is acceptable — otherwise a crafted request could
     // attach any object in the bucket, or any URL at all, to a review.
-    if (!item.objectKey.startsWith('review/'))
+    if (!item.objectKey.startsWith('public/review/'))
       throw new ApiError(422, 'That photo was not uploaded through this form.', 'REVIEW_MEDIA_INVALID');
   }
 
@@ -218,7 +219,7 @@ export async function createReview(
       orderId,
       rating: input.rating,
       body,
-      media: { create: media.map((item, index) => ({ ...item, sortOrder: index })) },
+      media: { create: media.map((item, index) => ({ ...item, url: publicMediaUrl(item.objectKey), sortOrder: index })) },
     },
     select: publicSelect,
   });
@@ -248,7 +249,7 @@ export async function updateReview(userId: string, id: string, input: ReviewInpu
       data: {
         rating: input.rating,
         body,
-        media: { create: media.map((item, index) => ({ ...item, sortOrder: index })) },
+        media: { create: media.map((item, index) => ({ ...item, url: publicMediaUrl(item.objectKey), sortOrder: index })) },
       },
       select: publicSelect,
     });

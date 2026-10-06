@@ -2,6 +2,7 @@ import { AdminTeamRole, FulfillmentStatus, JharkhandDistrict, LedgerType, Modera
 import { COMMERCE } from '../config/constants.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
+import { privateDownloadUrl } from './storage.service.js';
 import { codeOf, type StatusEvent } from '../config/status-codes.js';
 import { env } from '../config/env.js';
 import { logger } from '../utils/logger.js';
@@ -534,7 +535,13 @@ export async function toggleHaat(userId: string, id: string, enabled: boolean, r
 }
 export const abandonedCarts = async (userId: string) => (await adminAccess(userId, 'marketing:manage'), prisma.cart.findMany({ where: { abandonmentStatus: { in: ['ABANDONED', 'REMINDER_SENT'] } }, include: { customer: { select: { name: true, email: true, mobile: true } }, items: { include: { variant: { include: { product: true } } } } }, orderBy: { updatedAt: 'desc' } }));
 export async function reminderOpened(userId: string, id: string, requestId?: string) { await adminAccess(userId, 'marketing:manage'); const cart = await prisma.cart.findUnique({ where: { id }, include: { customer: true, items: { include: { variant: true } } } }); if (!cart) throw new ApiError(404, 'Cart was not found.', 'CART_NOT_FOUND'); await prisma.cart.update({ where: { id }, data: { abandonmentStatus: 'REMINDER_SENT', lastReminderAt: new Date() } }); const value = cart.items.reduce((sum, item) => sum.plus(item.variant.price.mul(item.quantity)), new Prisma.Decimal(0)); const message = encodeURIComponent(`Johar ${cart.customer.name}! Aapke JoharHaat cart mein ₹${value.toFixed(2)} ka samaan intezar kar raha hai. Checkout complete karein.`); await writeAudit(prisma, { event: 'CART_REMINDER_PREPARED', actorId: userId, entityType: 'Cart', entityId: id, requestId, permission: 'marketing:manage' }); return { auditAt: new Date(), whatsappUrl: `https://wa.me/91${cart.customer.mobile}?text=${message}` }; }
-export const applications = async (userId: string) => (await adminAccess(userId, 'moderation:manage'), prisma.vendorApplication.findMany({ include: { documents: true, audits: true }, orderBy: { createdAt: 'desc' } }));
+export const applications = async (userId: string) => (await adminAccess(userId, 'moderation:manage'), prisma.vendorApplication.findMany({ include: { documents: { select: { id:true,category:true,fileName:true,mimeType:true,size:true,createdAt:true } }, audits: true }, orderBy: { createdAt: 'desc' } }));
+export async function applicationDocumentUrl(userId: string, applicationId: string, documentId: string) {
+  await adminAccess(userId, 'moderation:manage');
+  const document = await prisma.kycDocumentMeta.findFirst({ where: { id: documentId, applicationId } });
+  if (!document) throw new ApiError(404, 'Application document was not found.', 'DOCUMENT_NOT_FOUND');
+  return { url: await privateDownloadUrl(document.objectKey), expiresInSeconds: 300 };
+}
 /**
  * Approval preconditions, kept pure so they are unit-testable without a database.
  *

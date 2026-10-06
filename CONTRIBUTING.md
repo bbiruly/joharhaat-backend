@@ -181,16 +181,16 @@ drifted. Run `pnpm prisma:migrate:dev` — do not hand-edit generated SQL.
 - Services own the rules; controllers only unwrap the request and wrap the
   response.
 
-## 6. What is still mock
+## 6. External integrations
 
 There is code for these, but they do not work. Do not build on them as if they
 did, and do not describe the system as production-ready while they stand:
 
 | | State |
 |---|---|
-| **Payments** | `confirmIntent` takes the outcome **from the client**. Any signed-in customer can produce a paid order without paying. No gateway, no signature verification, no real webhook. |
-| **Object storage** | `mockObjectStorage` returns a URL and stores nothing. Product photos and KYC certificates go nowhere. |
-| **Email** | Written to `emailOutbox`, logged by the worker, marked sent. Password reset is therefore unusable. |
+| **Payments** | Razorpay UPI is implemented with server-created orders, checkout verification and signed webhooks. It requires configured Razorpay credentials and staging acceptance before live traffic. |
+| **Object storage** | S3 presigned uploads and CloudFront media delivery are implemented. KYC remains private and requires a moderator-signed download URL. AWS bucket/OAC/CORS/lifecycle configuration is documented in `docs/production-integrations.md`. |
+| **Email** | Resend sends the durable email outbox from a separate worker. Domain verification and webhook configuration are required for production. |
 | **SMS** | Same shape. Vendors receive no order alerts. |
 | **Courier** | The shipping label says it is not connected to a provider. |
 

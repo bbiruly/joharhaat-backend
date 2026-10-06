@@ -239,6 +239,18 @@ export const CATALOG_EVENTS = entry({
     hi: 'विक्रेता ने उत्पाद संग्रहीत किया',
     category: AdminNotificationCategory.PRODUCT,
   },
+  CATEGORY_CREATED: {
+    code: 'C009',
+    en: 'Product category created',
+    hi: 'उत्पाद श्रेणी बनाई गई',
+    category: AdminNotificationCategory.PRODUCT,
+  },
+  CATEGORY_UPDATED: {
+    code: 'C010',
+    en: 'Product category updated',
+    hi: 'उत्पाद श्रेणी बदली गई',
+    category: AdminNotificationCategory.PRODUCT,
+  },
   STOCK_LOW: {
     code: 'C005',
     en: 'Stock below threshold',

@@ -1,7 +1,7 @@
 import type { RequestHandler } from 'express';
 import { FulfillmentStatus } from '../generated/prisma/client.js';
 import * as vendor from '../services/vendor.service.js';
-import { mockObjectStorage } from '../services/storage.service.js';
+import { objectStorage } from '../services/storage.service.js';
 
 export const dashboard: RequestHandler = async (req, res) => res.json({ data: await vendor.dashboard(req.auth!.userId) });
 export const products: RequestHandler = async (req, res) => res.json({ data: await vendor.listProducts(req.auth!.userId) });
@@ -14,5 +14,5 @@ export const transitionOrder: RequestHandler = async (req, res) => res.json({ da
 export const shippingLabel: RequestHandler = async (req, res) => res.json({ data: await vendor.shippingLabel(req.auth!.userId, String(req.params.id)) });
 export const requestPayout: RequestHandler = async (req, res) => res.status(201).json({ data: await vendor.requestPayout(req.auth!.userId) });
 export const submitApplication: RequestHandler = async (req, res) => res.status(201).json({ data: await vendor.submitApplication(req.auth!.userId, req.body) });
-export const presignUpload: RequestHandler = async (req, res) => res.status(201).json({ data: await mockObjectStorage.createPresignedUpload(req.body) });
-export const confirmUpload: RequestHandler = async (req, res) => res.json({ data: await mockObjectStorage.confirmUpload(req.body.objectKey) });
+export const presignUpload: RequestHandler = async (req, res) => res.status(201).json({ data: await objectStorage.createPresignedUpload({ ...req.body, ownerId: req.auth!.userId }) });
+export const confirmUpload: RequestHandler = async (req, res) => res.json({ data: await objectStorage.confirmUpload(req.body.objectKey, req.auth!.userId) });
