@@ -251,6 +251,12 @@ export const CATALOG_EVENTS = entry({
     hi: 'उत्पाद श्रेणी बदली गई',
     category: AdminNotificationCategory.PRODUCT,
   },
+  CATEGORY_DELETED: {
+    code: 'C011',
+    en: 'Product category deleted',
+    hi: 'उत्पाद श्रेणी हटाई गई',
+    severity: AdminNotificationSeverity.WARNING,
+  },
   STOCK_LOW: {
     code: 'C005',
     en: 'Stock below threshold',
@@ -369,6 +375,11 @@ export const ADMIN_EVENTS = entry({
     code: 'A018',
     en: 'Review reports dismissed',
     hi: 'समीक्षा की शिकायतें खारिज कीं',
+  },
+  HOMEPAGE_VIDEO_UPDATED: {
+    code: 'A019',
+    en: 'Homepage promotional video updated',
+    hi: 'होमपेज का प्रचार वीडियो अपडेट किया गया',
   },
 });
 

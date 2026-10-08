@@ -30,7 +30,33 @@ only `public/*`.
 Bucket CORS must allow the exact website origins, `PUT`, and these headers:
 `Content-Type`, `x-amz-meta-category`, `x-amz-meta-expectedsize`, `x-amz-meta-ownerid`,
 `x-amz-server-side-encryption`, `x-amz-tagging`. Do not use wildcard origins
-with credentials. Add a lifecycle rule that expires objects tagged
+with credentials. For the current local and production sites, apply this rule
+in the S3 bucket's Permissions → CORS editor using an AWS principal with
+`s3:PutBucketCORS`:
+
+```json
+[
+  {
+    "AllowedOrigins": [
+      "http://localhost:3000",
+      "https://joharhaat-jharkhand.joharxp.chatgpt.site"
+    ],
+    "AllowedMethods": ["PUT"],
+    "AllowedHeaders": [
+      "Content-Type",
+      "x-amz-meta-category",
+      "x-amz-meta-expectedsize",
+      "x-amz-meta-ownerid",
+      "x-amz-server-side-encryption",
+      "x-amz-tagging"
+    ],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+Add a lifecycle rule that expires objects tagged
 `confirmed=false`; confirmed business objects are retagged to `true` by the
 API.
 

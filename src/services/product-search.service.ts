@@ -4,13 +4,26 @@ import { prisma } from '../db/prisma.js';
 import type { ProductSearchInput } from '../schemas/product-search.schema.js';
 import { pagination } from '../utils/pagination.js';
 
+export type PublicCatalogVariantFilter = Pick<Prisma.ProductVariantWhereInput, 'isActive'> &
+  Pick<Prisma.ProductVariantWhereInput, 'price'>;
+
+export function buildPublicCatalogProductWhere(
+  matchingVariant: PublicCatalogVariantFilter,
+): Prisma.ProductWhereInput {
+  return {
+    isPublished: true,
+    vendor: { verificationStatus: VerificationStatus.VERIFIED },
+    variants: { some: matchingVariant },
+  };
+}
+
 export async function searchProducts(input: ProductSearchInput) {
   const { page, pageSize, skip } = pagination(input.page, Math.min(input.pageSize, env.MAX_PAGE_SIZE));
   const price: Prisma.DecimalFilter | undefined = input.minPrice !== undefined || input.maxPrice !== undefined ? {
     ...(input.minPrice !== undefined ? { gte: input.minPrice } : {}),
     ...(input.maxPrice !== undefined ? { lte: input.maxPrice } : {}),
   } : undefined;
-  const matchingVariant: Prisma.ProductVariantWhereInput = { isActive: true, stock: { gt: 0 }, ...(price ? { price } : {}) };
+  const matchingVariant: PublicCatalogVariantFilter = { isActive: true, ...(price ? { price } : {}) };
   const text = input.q ? {
     OR: [
       { name: { contains: input.q, mode: Prisma.QueryMode.insensitive } },
@@ -22,9 +35,7 @@ export async function searchProducts(input: ProductSearchInput) {
     ],
   } satisfies Prisma.ProductWhereInput : {};
   const where: Prisma.ProductWhereInput = {
-    isPublished: true,
-    vendor: { verificationStatus: VerificationStatus.VERIFIED },
-    variants: { some: matchingVariant },
+    ...buildPublicCatalogProductWhere(matchingVariant),
     ...(input.category ? { category: { slug: input.category, isActive: true } } : {}),
     ...(input.district ? { district: input.district } : {}),
     ...(input.haatDay ? { weeklyHaatDay: input.haatDay } : {}),

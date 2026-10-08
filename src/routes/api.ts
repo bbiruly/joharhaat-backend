@@ -39,6 +39,34 @@ const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeader
 /** Blanket ceiling for every authenticated write path. */
 const writeLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down and try again.' } } });
 const productInput = z.object({ name: z.string().trim().min(3).max(160), slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), description: z.string().trim().min(20).max(3000), artisanStory: z.string().trim().min(40).max(3000).optional(), categoryId: z.string().min(1), district: z.enum(JharkhandDistrict).optional(), weeklyHaatId: z.string().min(1).optional(), materials: z.string().trim().max(500).optional(), dimensions: z.string().trim().max(200).optional(), careInstructions: z.string().trim().max(1000).optional(), dispatchEstimate: z.string().trim().max(160).optional(), returnPolicy: z.string().trim().max(1000).optional(), submitForReview: z.boolean().optional(), variants: z.array(z.object({ sku: z.string().trim().min(3).max(80), label: z.string().trim().min(1).max(60), price: z.number().positive().max(1_000_000), stock: z.number().int().nonnegative().max(1_000_000) })).min(1).max(25), media: z.array(z.object({ objectKey: z.string().startsWith('public/product/'), url: z.string().url(), mimeType: z.enum(['image/jpeg','image/png','image/webp']), altText: z.string().trim().min(3).max(200), sortOrder: z.number().int().nonnegative(), isCover: z.boolean(), width: z.number().int().positive().optional(), height: z.number().int().positive().optional() })).max(8).optional() }).strict();
+const productDraftPayload = z.object({
+  name: z.string().max(160).optional(),
+  categoryId: z.string().max(100).optional(),
+  description: z.string().max(3000).optional(),
+  artisanStory: z.string().max(3000).optional(),
+  district: z.enum(JharkhandDistrict).nullable().optional(),
+  weeklyHaatId: z.string().max(100).nullable().optional(),
+  materials: z.string().max(500).optional(),
+  dimensions: z.string().max(200).optional(),
+  careInstructions: z.string().max(1000).optional(),
+  dispatchEstimate: z.string().max(160).optional(),
+  returnPolicy: z.string().max(1000).optional(),
+  variants: z.array(z.object({
+    sku: z.string().max(80).optional(),
+    label: z.string().max(60).optional(),
+    price: z.number().min(0).max(1_000_000).optional(),
+    stock: z.number().int().min(0).max(1_000_000).optional(),
+  }).strict()).max(25).optional(),
+  media: z.array(z.object({
+    objectKey: z.string().startsWith('public/product/'),
+    mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+    altText: z.string().trim().min(3).max(200),
+    sortOrder: z.number().int().nonnegative(),
+    isCover: z.boolean(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+  }).strict()).max(8).optional(),
+}).strict();
 const categoryInput = z.object({ name: z.string().trim().min(2).max(100), nameHi: z.string().trim().min(2).max(100).optional(), description: z.string().trim().max(240).optional(), descriptionHi: z.string().trim().max(240).optional(), displayOrder: z.number().int().min(0).max(10_000), isFeatured: z.boolean() }).strict();
 const applicationInput = z.object({ idempotencyKey: z.string().min(8).max(128), ownerName: z.string().trim().min(2).max(100), collectiveName: z.string().trim().min(2).max(160), email: z.string().email(), mobile: z.string().regex(/^[6-9]\d{9}$/), district: z.enum(JharkhandDistrict), category: z.string().min(2).max(80), msmeNumber: z.string().regex(/^UDYAM-[A-Z]{2}-\d{2}-\d{7}$/), phoneVerified: z.literal(true), aadhaarVerified: z.literal(true), accountHolderName: z.string().min(2).max(100), bankLastFour: z.string().regex(/^\d{4}$/), ifsc: z.string().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/), verificationReference: z.string().max(160).optional(), story: z.string().min(80).max(1500), msmeCertificate: z.object({ objectKey: z.string().startsWith('private/msme/'), fileName: z.string().min(1).max(120), mimeType: z.enum(['application/pdf','image/jpeg','image/png']), size: z.number().int().positive().max(5_000_000) }) });
 
@@ -68,6 +96,7 @@ apiRouter.get('/products/search', searchLimiter, validate(z.object({ query: prod
 apiRouter.get('/categories', asyncHandler(catalogController.categories));
 apiRouter.get('/districts', asyncHandler(catalogController.districts));
 apiRouter.get('/haats', asyncHandler(catalogController.haats));
+apiRouter.get('/homepage-video', asyncHandler(catalogController.homepageVideo));
 apiRouter.get('/products/:id', validate(z.object({ params: idParams })), asyncHandler(catalogController.product));
 
 /* -------------------------------------------------------------- reviews ---
@@ -134,6 +163,12 @@ apiRouter.post('/vendor-applications', authenticate, writeLimiter, validate(z.ob
 apiRouter.get('/vendor/dashboard', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.dashboard));
 apiRouter.post('/vendor/uploads/presign', authenticate, authorize(UserRole.VENDOR), validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('product') }) })), asyncHandler(vendorController.presignUpload));
 apiRouter.get('/vendor/products', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.products));
+apiRouter.get('/vendor/product-drafts', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.productDrafts));
+apiRouter.post('/vendor/product-drafts', authenticate, authorize(UserRole.VENDOR), writeLimiter, validate(z.object({ body: z.object({ payload: productDraftPayload }) })), asyncHandler(vendorController.saveProductDraft));
+apiRouter.get('/vendor/product-drafts/:id', authenticate, authorize(UserRole.VENDOR), validate(z.object({ params: idParams })), asyncHandler(vendorController.productDraft));
+apiRouter.put('/vendor/product-drafts/:id', authenticate, authorize(UserRole.VENDOR), writeLimiter, validate(z.object({ params: idParams, body: z.object({ payload: productDraftPayload }) })), asyncHandler(vendorController.saveProductDraft));
+apiRouter.delete('/vendor/product-drafts/:id', authenticate, authorize(UserRole.VENDOR), writeLimiter, validate(z.object({ params: idParams })), asyncHandler(vendorController.discardProductDraft));
+apiRouter.post('/vendor/product-drafts/:id/submit', authenticate, authorize(UserRole.VENDOR), writeLimiter, validate(z.object({ params: idParams })), asyncHandler(vendorController.submitProductDraft));
 apiRouter.get('/vendor/products/:id', authenticate, authorize(UserRole.VENDOR), validate(z.object({ params: idParams })), asyncHandler(vendorController.product));
 apiRouter.post('/vendor/products', authenticate, authorize(UserRole.VENDOR), validate(z.object({ body: productInput })), asyncHandler(vendorController.createProduct));
 apiRouter.post('/vendor/products/:id/submit', authenticate, authorize(UserRole.VENDOR), validate(z.object({ params: idParams })), asyncHandler(vendorController.submitProduct));
@@ -145,6 +180,9 @@ apiRouter.post('/vendor/payout-requests', authenticate, authorize(UserRole.VENDO
 
 apiRouter.get('/admin/analytics', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.analytics));
 apiRouter.get('/admin/access', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.access));
+apiRouter.get('/admin/homepage-video', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.homepageVideo));
+apiRouter.post('/admin/homepage-video/uploads/presign', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ fileName: z.string().min(1).max(200), mimeType: z.enum(['video/mp4', 'video/webm']), size: z.number().int().positive() }) })), asyncHandler(adminController.presignHomepageVideo));
+apiRouter.put('/admin/homepage-video', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ objectKey: z.string().min(1).nullable().optional(), enabled: z.boolean() }) })), asyncHandler(adminController.updateHomepageVideo));
 apiRouter.get('/admin/overview', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.overview));
 apiRouter.get('/admin/product-analytics', authenticate, authorize(UserRole.ADMIN), asyncHandler(productAnalyticsController.list));
 apiRouter.get('/admin/product-analytics/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(productAnalyticsController.detail));
@@ -196,6 +234,7 @@ apiRouter.get('/admin/categories', authenticate, authorize(UserRole.ADMIN), asyn
 apiRouter.post('/admin/categories', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:categoryInput})), asyncHandler(adminController.createCategory));
 apiRouter.put('/admin/categories/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:categoryInput})), asyncHandler(adminController.updateCategory));
 apiRouter.patch('/admin/categories/:id/active', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({isActive:z.boolean()})})), asyncHandler(adminController.setCategoryActive));
+apiRouter.delete('/admin/categories/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.deleteCategory));
 apiRouter.post('/admin/haats', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:haatInput})), asyncHandler(adminController.saveHaat));
 apiRouter.put('/admin/haats/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:haatInput})), asyncHandler(adminController.saveHaat));
 apiRouter.patch('/admin/haats/:id/toggle', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({enabled:z.boolean()})})), asyncHandler(adminController.toggleHaat));

@@ -5,6 +5,11 @@ import { objectStorage } from '../services/storage.service.js';
 
 export const dashboard: RequestHandler = async (req, res) => res.json({ data: await vendor.dashboard(req.auth!.userId) });
 export const products: RequestHandler = async (req, res) => res.json({ data: await vendor.listProducts(req.auth!.userId) });
+export const productDrafts: RequestHandler = async (req, res) => res.json({ data: await vendor.listProductDrafts(req.auth!.userId) });
+export const productDraft: RequestHandler = async (req, res) => res.json({ data: await vendor.productDraft(req.auth!.userId, String(req.params.id)) });
+export const saveProductDraft: RequestHandler = async (req, res) => res.status(req.params.id ? 200 : 201).json({ data: await vendor.saveProductDraft(req.auth!.userId, req.params.id ? String(req.params.id) : undefined, req.body.payload) });
+export const discardProductDraft: RequestHandler = async (req, res) => res.json({ data: await vendor.discardProductDraft(req.auth!.userId, String(req.params.id)) });
+export const submitProductDraft: RequestHandler = async (req, res) => res.status(201).json({ data: await vendor.submitProductDraft(req.auth!.userId, String(req.params.id)) });
 export const product: RequestHandler = async (req, res) => res.json({ data: await vendor.productDetail(req.auth!.userId, String(req.params.id)) });
 export const createProduct: RequestHandler = async (req, res) => res.status(201).json({ data: await vendor.createProduct(req.auth!.userId, req.body) });
 export const submitProduct: RequestHandler = async (req, res) => res.json({ data: await vendor.submitProduct(req.auth!.userId, String(req.params.id)) });

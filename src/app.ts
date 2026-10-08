@@ -10,6 +10,7 @@ import { env } from './config/env.js';
 import { errorHandler, notFound } from './middleware/error-handler.js';
 import { apiRouter } from './routes/api.js';
 import { openApiDocument } from './openapi.js';
+import { requestLogRedaction } from './utils/log-redaction.js';
 
 export function createApp(): Express {
   const app = express();
@@ -20,7 +21,11 @@ export function createApp(): Express {
     response.setHeader('x-request-id', request.requestId);
     next();
   });
-  app.use(pinoHttp({ level: env.LOG_LEVEL, customProps: (request) => ({ requestId: request.requestId }) }));
+  app.use(pinoHttp({
+    level: env.LOG_LEVEL,
+    redact: requestLogRedaction,
+    customProps: (request) => ({ requestId: request.requestId }),
+  }));
   app.use(helmet());
   app.use(cors({
     credentials: true,

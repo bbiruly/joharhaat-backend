@@ -8,7 +8,27 @@ const baseEnv = { DATABASE_URL: 'postgresql://test:test@localhost/test', DIRECT_
 
 describe('integration environment', () => {
   it('boots development without production provider credentials', () => {
-    expect(parseEnvironment({ ...baseEnv, NODE_ENV: 'development' }).S3_BUCKET).toBe('s3-not-configured');
+    const configured = parseEnvironment({ ...baseEnv, NODE_ENV: 'development' });
+    expect(configured.AWS_S3_BUCKET).toBe('s3-not-configured');
+    expect(configured.AWS_CLOUDFRONT_DOMAIN).toBe('cdn-not-configured');
+  });
+
+  it('uses only the AWS asset variable names used by JoharXP', () => {
+    const configured = parseEnvironment({
+      ...baseEnv,
+      AWS_S3_BUCKET: 'assets-bucket',
+      AWS_CLOUDFRONT_DOMAIN: 'cdn.example.com',
+      S3_BUCKET: 'stale-bucket',
+      CLOUDFRONT_BASE_URL: 'https://stale.example.com',
+    });
+    expect(configured.AWS_S3_BUCKET).toBe('assets-bucket');
+    expect(configured.AWS_CLOUDFRONT_DOMAIN).toBe('cdn.example.com');
+    expect(configured).not.toHaveProperty('S3_BUCKET');
+    expect(configured).not.toHaveProperty('CLOUDFRONT_BASE_URL');
+  });
+
+  it('requires static AWS access key credentials as a pair', () => {
+    expect(() => parseEnvironment({ ...baseEnv, AWS_ACCESS_KEY_ID: 'configured' })).toThrow('AWS_SECRET_ACCESS_KEY: must be set together');
   });
 
   it('requires every provider credential in production', () => {

@@ -1,4 +1,5 @@
 import { prisma } from '../db/prisma.js';
+import { Prisma } from '../generated/prisma/client.js';
 import { ApiError } from '../utils/api-error.js';
 import { writeAudit } from '../utils/audit-log.js';
 import { adminAccess } from './admin.service.js';
@@ -50,4 +51,51 @@ export async function setCategoryActive(userId: string, id: string, requestId: s
   const category = await prisma.category.update({ where: { id }, data: { isActive } });
   await writeAudit(prisma, { event: 'CATEGORY_UPDATED', actorId: userId, entityType: 'Category', entityId: id, requestId, permission: 'moderation:manage', previousState: { isActive: previous.isActive }, nextState: { isActive } });
   return category;
+}
+
+export function assertCategoryCanDelete(productCount: number) {
+  if (productCount > 0)
+    throw new ApiError(
+      409,
+      'A category with products cannot be deleted. Deactivate it instead.',
+      'CATEGORY_HAS_PRODUCTS',
+    );
+}
+
+export async function deleteCategory(userId: string, id: string, requestId: string | undefined) {
+  await adminAccess(userId, 'moderation:manage');
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const category = await tx.category.findUnique({
+        where: { id },
+        include: { _count: { select: { products: true } } },
+      });
+      if (!category) throw new ApiError(404, 'Category was not found.', 'CATEGORY_NOT_FOUND');
+      assertCategoryCanDelete(category._count.products);
+      await tx.category.delete({ where: { id } });
+      await writeAudit(tx, {
+        event: 'CATEGORY_DELETED',
+        actorId: userId,
+        entityType: 'Category',
+        entityId: id,
+        requestId,
+        permission: 'moderation:manage',
+        previousState: {
+          slug: category.slug,
+          name: category.name,
+          nameHi: category.nameHi,
+          displayOrder: category.displayOrder,
+          isFeatured: category.isFeatured,
+          isActive: category.isActive,
+        },
+      });
+      return { deleted: true };
+    });
+  } catch (error) {
+    // The FK remains the final guard if a product is assigned concurrently
+    // after the count check but before the delete.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003')
+      assertCategoryCanDelete(1);
+    throw error;
+  }
 }

@@ -7,6 +7,7 @@ import * as adminAudit from '../services/admin-audit.service.js';
 import * as adminCoupon from '../services/admin-coupon.service.js';
 import * as adminReview from '../services/admin-review.service.js';
 import * as adminCategory from '../services/admin-category.service.js';
+import * as adminHomepageVideo from '../services/admin-homepage-video.service.js';
 
 export const analytics: RequestHandler = async (req, res) => res.json({ data: await admin.analytics(req.auth!.userId, Number(req.query.months ?? 6)) });
 export const haats: RequestHandler = async (req, res) => res.json({ data: await admin.listHaats(req.auth!.userId) });
@@ -17,6 +18,7 @@ export const categories: RequestHandler = async (req, res) => res.json({ data: a
 export const createCategory: RequestHandler = async (req, res) => res.status(201).json({ data: await adminCategory.createCategory(req.auth!.userId, req.requestId, req.body) });
 export const updateCategory: RequestHandler = async (req, res) => res.json({ data: await adminCategory.updateCategory(req.auth!.userId, String(req.params.id), req.requestId, req.body) });
 export const setCategoryActive: RequestHandler = async (req, res) => res.json({ data: await adminCategory.setCategoryActive(req.auth!.userId, String(req.params.id), req.requestId, req.body.isActive) });
+export const deleteCategory: RequestHandler = async (req, res) => res.json({ data: await adminCategory.deleteCategory(req.auth!.userId, String(req.params.id), req.requestId) });
 export const abandonedCarts: RequestHandler = async (req, res) => res.json({ data: await admin.abandonedCarts(req.auth!.userId) });
 export const reminderOpened: RequestHandler = async (req, res) => res.json({ data: await admin.reminderOpened(req.auth!.userId, String(req.params.id), req.requestId) });
 export const applications: RequestHandler = async (req, res) => res.json({ data: await admin.applications(req.auth!.userId) });
@@ -55,3 +57,6 @@ export const createTeamMember: RequestHandler = async (req, res) => res.status(2
 export const removeTeamMember: RequestHandler = async (req, res) => res.json({ data: await admin.removeTeamMember(req.auth!.userId, req.requestId, String(req.params.id)) });
 export const permissionMatrix: RequestHandler = async (req, res) => res.json({ data: await admin.readPermissionMatrix(req.auth!.userId) });
 export const setRolePermissions: RequestHandler = async (req, res) => res.json({ data: await admin.setRolePermissions(req.auth!.userId, req.requestId, req.body.role as AdminTeamRole, req.body.permissions) });
+export const homepageVideo: RequestHandler = async (req, res) => res.json({ data: await adminHomepageVideo.homepageVideoForAdmin(req.auth!.userId) });
+export const presignHomepageVideo: RequestHandler = async (req, res) => res.status(201).json({ data: await adminHomepageVideo.presignHomepageVideo(req.auth!.userId, req.body) });
+export const updateHomepageVideo: RequestHandler = async (req, res) => res.json({ data: await adminHomepageVideo.updateHomepageVideo(req.auth!.userId, req.requestId, req.body) });

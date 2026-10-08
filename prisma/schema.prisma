@@ -289,6 +289,7 @@ model Vendor {
   updatedAt          DateTime             @updatedAt @map("updated_at")
   owner              User                 @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   products           Product[]
+  productDrafts      VendorProductDraft[]
   vendorOrders       VendorOrder[]
   walletLedgers      WalletLedger[]
   notifications      NotificationOutbox[]
@@ -296,6 +297,18 @@ model Vendor {
 
   @@index([district, verificationStatus])
   @@map("vendors")
+}
+
+model VendorProductDraft {
+  id        String   @id @default(cuid())
+  vendorId  String   @map("vendor_id")
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  vendor    Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, updatedAt])
+  @@map("vendor_product_drafts")
 }
 
 model Category {
@@ -1013,6 +1026,18 @@ model AdminMembership {
 
   @@index([role, isActive])
   @@map("admin_memberships")
+}
+
+/// The single promotional video shown beside the Kolhan brand story.
+model HomepageVideo {
+  id          String   @id
+  objectKey   String?  @map("object_key")
+  url         String?
+  enabled     Boolean  @default(false)
+  updatedById String?  @map("updated_by_id")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("homepage_video")
 }
 
 model AdminNotification {
