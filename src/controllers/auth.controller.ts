@@ -10,7 +10,15 @@ const sessionResponse = (response: Response, result: Awaited<ReturnType<typeof a
 export const registerController: RequestHandler = async (request, response) => sessionResponse(response, await auth.register(request.body, context(request)), 201);
 export const loginController: RequestHandler = async (request, response) => sessionResponse(response, await auth.login(request.body, context(request)));
 export const refreshController: RequestHandler = async (request, response) => sessionResponse(response, await auth.refresh(readCookie(request) ?? '', context(request)));
-export const logoutController: RequestHandler = async (request, response) => { await auth.logout(readCookie(request)); response.clearCookie(cookieName, { path: '/api/v1/auth' }).status(204).end(); };
+export const logoutController: RequestHandler = async (request, response) => {
+  try {
+    await auth.logout(readCookie(request));
+  } catch (error) {
+    // Sign-out must still clear the browser cookie if the session store is down.
+    request.log?.error({ err: error, requestId: request.requestId }, 'logout session revocation failed');
+  }
+  response.clearCookie(cookieName, { path: '/api/v1/auth' }).status(204).end();
+};
 export const revokeAllController: RequestHandler = async (request, response) => { await auth.revokeAll(request.auth!.userId); response.clearCookie(cookieName, { path: '/api/v1/auth' }).status(204).end(); };
 export const forgotPasswordController: RequestHandler = async (request, response) => { await auth.forgotPassword(request.body.email); response.status(202).json({ data: { message: 'If this account exists, a reset message has been queued.' } }); };
 export const resetPasswordController: RequestHandler = async (request, response) => { await auth.resetPassword(request.body.token, request.body.password); response.status(204).end(); };

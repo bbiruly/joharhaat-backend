@@ -289,6 +289,7 @@ model Vendor {
   updatedAt          DateTime             @updatedAt @map("updated_at")
   owner              User                 @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   products           Product[]
+  productDrafts      VendorProductDraft[]
   vendorOrders       VendorOrder[]
   walletLedgers      WalletLedger[]
   notifications      NotificationOutbox[]
@@ -298,16 +299,34 @@ model Vendor {
   @@map("vendors")
 }
 
+model VendorProductDraft {
+  id        String   @id @default(cuid())
+  vendorId  String   @map("vendor_id")
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  vendor    Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, updatedAt])
+  @@map("vendor_product_drafts")
+}
+
 model Category {
   id                   String                @id @default(cuid())
   slug                 String                @unique
   name                 String
+  nameHi               String?               @map("name_hi")
+  description          String?
+  descriptionHi        String?               @map("description_hi")
+  displayOrder         Int                   @default(0) @map("display_order")
+  isFeatured           Boolean               @default(false) @map("is_featured")
   isActive             Boolean               @default(true) @map("is_active")
   createdAt            DateTime              @default(now()) @map("created_at")
   updatedAt            DateTime              @updatedAt @map("updated_at")
   products             Product[]
   managedHaatOverrides ManagedHaatOverride[]
 
+  @@index([isActive, displayOrder])
   @@map("categories")
 }
 
@@ -339,8 +358,8 @@ model Product {
   slug             String                  @unique
   description      String
   artisanStory     String?                 @map("artisan_story")
-  district         JharkhandDistrict
-  weeklyHaatDay    WeeklyHaatDay           @map("weekly_haat_day")
+  district         JharkhandDistrict?
+  weeklyHaatDay    WeeklyHaatDay?          @map("weekly_haat_day")
   minPrice         Decimal                 @map("min_price") @db.Decimal(12, 2)
   isPublished      Boolean                 @default(false) @map("is_published")
   lifecycleStatus  ProductLifecycleStatus  @default(DRAFT) @map("lifecycle_status")
@@ -774,17 +793,21 @@ model PasswordResetToken {
 }
 
 model EmailOutbox {
-  id          String             @id @default(cuid())
-  recipient   String
-  subject     String
-  template    String
-  payload     Json
-  status      NotificationStatus @default(PENDING)
-  attempts    Int                @default(0)
-  lastError   String?            @map("last_error")
-  processedAt DateTime?          @map("processed_at")
-  createdAt   DateTime           @default(now()) @map("created_at")
-  updatedAt   DateTime           @updatedAt @map("updated_at")
+  id                String             @id @default(cuid())
+  recipient         String
+  subject           String
+  template          String
+  payload           Json
+  status            NotificationStatus @default(PENDING)
+  attempts          Int                @default(0)
+  lastError         String?            @map("last_error")
+  processedAt       DateTime?          @map("processed_at")
+  providerMessageId String?            @unique @map("provider_message_id")
+  dedupeKey         String?            @unique @map("dedupe_key")
+  nextAttemptAt     DateTime           @default(now()) @map("next_attempt_at")
+  terminalAt        DateTime?          @map("terminal_at")
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
 
   @@index([status, createdAt])
   @@map("email_outbox")
@@ -837,20 +860,23 @@ model CouponRedemption {
 }
 
 model PaymentIntent {
-  id             String                 @id @default(cuid())
-  orderId        String                 @map("order_id")
-  idempotencyKey String                 @unique @map("idempotency_key")
-  method         PaymentMethod
-  status         PaymentIntentStatus    @default(CREATED)
-  amount         Decimal                @db.Decimal(14, 2)
-  providerRef    String?                @unique @map("provider_ref")
-  failureCode    String?                @map("failure_code")
-  expiresAt      DateTime               @map("expires_at")
-  createdAt      DateTime               @default(now()) @map("created_at")
-  updatedAt      DateTime               @updatedAt @map("updated_at")
-  order          Order                  @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  events         PaymentEvent[]
-  reservations   InventoryReservation[]
+  id                String                 @id @default(cuid())
+  orderId           String                 @map("order_id")
+  idempotencyKey    String                 @unique @map("idempotency_key")
+  method            PaymentMethod
+  status            PaymentIntentStatus    @default(CREATED)
+  amount            Decimal                @db.Decimal(14, 2)
+  providerRef       String?                @unique @map("provider_ref")
+  providerOrderId   String?                @unique @map("provider_order_id")
+  providerPaymentId String?                @unique @map("provider_payment_id")
+  verifiedAt        DateTime?              @map("verified_at")
+  failureCode       String?                @map("failure_code")
+  expiresAt         DateTime               @map("expires_at")
+  createdAt         DateTime               @default(now()) @map("created_at")
+  updatedAt         DateTime               @updatedAt @map("updated_at")
+  order             Order                  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  events            PaymentEvent[]
+  reservations      InventoryReservation[]
 
   @@index([orderId, status])
   @@map("payment_intents")
@@ -1001,6 +1027,18 @@ model AdminMembership {
 
   @@index([role, isActive])
   @@map("admin_memberships")
+}
+
+/// The single promotional video shown beside the Kolhan brand story.
+model HomepageVideo {
+  id          String   @id
+  objectKey   String?  @map("object_key")
+  url         String?
+  enabled     Boolean  @default(false)
+  updatedById String?  @map("updated_by_id")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("homepage_video")
 }
 
 model AdminNotification {

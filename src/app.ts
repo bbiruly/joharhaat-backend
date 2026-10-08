@@ -10,6 +10,7 @@ import { env } from './config/env.js';
 import { errorHandler, notFound } from './middleware/error-handler.js';
 import { apiRouter } from './routes/api.js';
 import { openApiDocument } from './openapi.js';
+import { requestLogRedaction } from './utils/log-redaction.js';
 
 export function createApp(): Express {
   const app = express();
@@ -20,7 +21,11 @@ export function createApp(): Express {
     response.setHeader('x-request-id', request.requestId);
     next();
   });
-  app.use(pinoHttp({ level: env.LOG_LEVEL, customProps: (request) => ({ requestId: request.requestId }) }));
+  app.use(pinoHttp({
+    level: env.LOG_LEVEL,
+    redact: requestLogRedaction,
+    customProps: (request) => ({ requestId: request.requestId }),
+  }));
   app.use(helmet());
   app.use(cors({
     credentials: true,
@@ -30,7 +35,7 @@ export function createApp(): Express {
     },
   }));
   app.use(compression());
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '1mb', verify(request, _response, buffer) { (request as import('express').Request).rawBody = Buffer.from(buffer); } }));
   app.use(express.urlencoded({ extended: false, limit: '100kb' }));
   // The schema enumerates every route, payload shape and error code — useful in
   // development, a free inventory for an attacker in production.

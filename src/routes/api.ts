@@ -26,6 +26,7 @@ import { productSearchQuerySchema } from '../schemas/product-search.schema.js';
 import { forgotPasswordSchema, loginSchema, registerSchema, resetPasswordSchema } from '../schemas/auth.schema.js';
 import { addressSchema, cartItemSchema, idParams, profileSchema, quantitySchema } from '../schemas/customer.schema.js';
 import { asyncHandler } from '../utils/async-handler.js';
+import { resendWebhook } from '../controllers/webhook.controller.js';
 
 export const apiRouter: ExpressRouter = Router();
 const searchLimiter = rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false });
@@ -37,8 +38,37 @@ const searchLimiter = rateLimit({ windowMs: 60_000, limit: 120, standardHeaders:
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: { code: 'RATE_LIMITED', message: 'Too many attempts. Try again in a few minutes.' } } });
 /** Blanket ceiling for every authenticated write path. */
 const writeLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down and try again.' } } });
-const productInput = z.object({ name: z.string().trim().min(3).max(160), slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), description: z.string().trim().min(20).max(3000), artisanStory: z.string().trim().min(40).max(3000).optional(), categoryId: z.string().min(1), district: z.enum(JharkhandDistrict), weeklyHaatDay: z.enum(WeeklyHaatDay), materials: z.string().trim().max(500).optional(), dimensions: z.string().trim().max(200).optional(), careInstructions: z.string().trim().max(1000).optional(), dispatchEstimate: z.string().trim().max(160).optional(), returnPolicy: z.string().trim().max(1000).optional(), submitForReview: z.boolean().optional(), variants: z.array(z.object({ sku: z.string().trim().min(3).max(80), label: z.string().trim().min(1).max(60), price: z.number().positive().max(1_000_000), stock: z.number().int().nonnegative().max(1_000_000) })).min(1).max(25), media: z.array(z.object({ objectKey: z.string().startsWith('product/'), url: z.string().url(), mimeType: z.enum(['image/jpeg','image/png','image/webp']), altText: z.string().trim().min(3).max(200), sortOrder: z.number().int().nonnegative(), isCover: z.boolean(), width: z.number().int().positive().optional(), height: z.number().int().positive().optional() })).max(8).optional() });
-const applicationInput = z.object({ idempotencyKey: z.string().min(8).max(128), ownerName: z.string().trim().min(2).max(100), collectiveName: z.string().trim().min(2).max(160), email: z.string().email(), mobile: z.string().regex(/^[6-9]\d{9}$/), district: z.enum(JharkhandDistrict), category: z.string().min(2).max(80), msmeNumber: z.string().regex(/^UDYAM-[A-Z]{2}-\d{2}-\d{7}$/), phoneVerified: z.literal(true), aadhaarVerified: z.literal(true), accountHolderName: z.string().min(2).max(100), bankLastFour: z.string().regex(/^\d{4}$/), ifsc: z.string().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/), verificationReference: z.string().max(160).optional(), story: z.string().min(80).max(1500), msmeCertificate: z.object({ objectKey: z.string().startsWith('msme/'), fileName: z.string().min(1).max(120), mimeType: z.enum(['application/pdf','image/jpeg','image/png']), size: z.number().int().positive().max(5_000_000) }) });
+const productInput = z.object({ name: z.string().trim().min(3).max(160), slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), description: z.string().trim().min(20).max(3000), artisanStory: z.string().trim().min(40).max(3000).optional(), categoryId: z.string().min(1), district: z.enum(JharkhandDistrict).optional(), weeklyHaatId: z.string().min(1).optional(), materials: z.string().trim().max(500).optional(), dimensions: z.string().trim().max(200).optional(), careInstructions: z.string().trim().max(1000).optional(), dispatchEstimate: z.string().trim().max(160).optional(), returnPolicy: z.string().trim().max(1000).optional(), submitForReview: z.boolean().optional(), variants: z.array(z.object({ sku: z.string().trim().min(3).max(80), label: z.string().trim().min(1).max(60), price: z.number().positive().max(1_000_000), stock: z.number().int().nonnegative().max(1_000_000) })).min(1).max(25), media: z.array(z.object({ objectKey: z.string().startsWith('public/product/'), url: z.string().url(), mimeType: z.enum(['image/jpeg','image/png','image/webp']), altText: z.string().trim().min(3).max(200), sortOrder: z.number().int().nonnegative(), isCover: z.boolean(), width: z.number().int().positive().optional(), height: z.number().int().positive().optional() })).max(8).optional() }).strict();
+const productDraftPayload = z.object({
+  name: z.string().max(160).optional(),
+  categoryId: z.string().max(100).optional(),
+  description: z.string().max(3000).optional(),
+  artisanStory: z.string().max(3000).optional(),
+  district: z.enum(JharkhandDistrict).nullable().optional(),
+  weeklyHaatId: z.string().max(100).nullable().optional(),
+  materials: z.string().max(500).optional(),
+  dimensions: z.string().max(200).optional(),
+  careInstructions: z.string().max(1000).optional(),
+  dispatchEstimate: z.string().max(160).optional(),
+  returnPolicy: z.string().max(1000).optional(),
+  variants: z.array(z.object({
+    sku: z.string().max(80).optional(),
+    label: z.string().max(60).optional(),
+    price: z.number().min(0).max(1_000_000).optional(),
+    stock: z.number().int().min(0).max(1_000_000).optional(),
+  }).strict()).max(25).optional(),
+  media: z.array(z.object({
+    objectKey: z.string().startsWith('public/product/'),
+    mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+    altText: z.string().trim().min(3).max(200),
+    sortOrder: z.number().int().nonnegative(),
+    isCover: z.boolean(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+  }).strict()).max(8).optional(),
+}).strict();
+const categoryInput = z.object({ name: z.string().trim().min(2).max(100), nameHi: z.string().trim().min(2).max(100).optional(), description: z.string().trim().max(240).optional(), descriptionHi: z.string().trim().max(240).optional(), displayOrder: z.number().int().min(0).max(10_000), isFeatured: z.boolean() }).strict();
+const applicationInput = z.object({ idempotencyKey: z.string().min(8).max(128), ownerName: z.string().trim().min(2).max(100), collectiveName: z.string().trim().min(2).max(160), email: z.string().email(), mobile: z.string().regex(/^[6-9]\d{9}$/), district: z.enum(JharkhandDistrict), category: z.string().min(2).max(80), msmeNumber: z.string().regex(/^UDYAM-[A-Z]{2}-\d{2}-\d{7}$/), phoneVerified: z.literal(true), aadhaarVerified: z.literal(true), accountHolderName: z.string().min(2).max(100), bankLastFour: z.string().regex(/^\d{4}$/), ifsc: z.string().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/), verificationReference: z.string().max(160).optional(), story: z.string().min(80).max(1500), msmeCertificate: z.object({ objectKey: z.string().startsWith('private/msme/'), fileName: z.string().min(1).max(120), mimeType: z.enum(['application/pdf','image/jpeg','image/png']), size: z.number().int().positive().max(5_000_000) }) });
 
 /**
  * Haat input. saveHaat used to receive `any` and spread it straight into
@@ -66,6 +96,7 @@ apiRouter.get('/products/search', searchLimiter, validate(z.object({ query: prod
 apiRouter.get('/categories', asyncHandler(catalogController.categories));
 apiRouter.get('/districts', asyncHandler(catalogController.districts));
 apiRouter.get('/haats', asyncHandler(catalogController.haats));
+apiRouter.get('/homepage-video', asyncHandler(catalogController.homepageVideo));
 apiRouter.get('/products/:id', validate(z.object({ params: idParams })), asyncHandler(catalogController.product));
 
 /* -------------------------------------------------------------- reviews ---
@@ -115,13 +146,14 @@ apiRouter.get('/orders/:id', authenticate, authorize(UserRole.CUSTOMER), validat
 
 apiRouter.post('/checkout/quote', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ body: checkoutQuoteBodySchema })), asyncHandler(checkoutQuoteController));
 apiRouter.post('/checkout', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ body: checkoutBodySchema, headers: checkoutHeadersSchema.passthrough() })), asyncHandler(checkoutController));
-apiRouter.post('/payments/intents', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ headers: checkoutHeadersSchema.passthrough(), body: z.object({ orderId: z.string().min(1), method: z.enum(['UPI','CARD','COD']) }) })), asyncHandler(paymentController.createIntent));
-apiRouter.post('/payments/intents/:id/confirm', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ params: idParams, body: z.object({ outcome: z.enum(['success','failure','cancel']) }) })), asyncHandler(paymentController.confirmIntent));
+apiRouter.post('/payments/intents', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ headers: checkoutHeadersSchema.passthrough(), body: z.object({ orderId: z.string().min(1), method: z.literal('UPI') }) })), asyncHandler(paymentController.createIntent));
+apiRouter.post('/payments/intents/:id/verify', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({ params: idParams, body: z.object({ razorpayOrderId:z.string().min(1),razorpayPaymentId:z.string().min(1),razorpaySignature:z.string().min(1) }) })), asyncHandler(paymentController.verifyIntent));
 apiRouter.get('/payments/orders/:orderId/state', authenticate, authorize(UserRole.CUSTOMER), validate(z.object({params:z.object({orderId:z.string().min(1)})})), asyncHandler(paymentController.paymentState));
-apiRouter.post('/payments/mock-webhook', validate(z.object({body:z.object({userId:z.string().min(1),intentId:z.string().min(1),status:z.enum(['CREATED','PROCESSING','SUCCEEDED','FAILED','CANCELLED','EXPIRED']),eventKey:z.string().min(1).max(200).optional()})})), asyncHandler(paymentController.webhook));
+apiRouter.post('/payments/razorpay/webhook', asyncHandler(paymentController.webhook));
+apiRouter.post('/webhooks/resend', asyncHandler(resendWebhook));
 
-apiRouter.post('/uploads/presign', validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('msme') }) })), asyncHandler(vendorController.presignUpload));
-apiRouter.post('/uploads/confirm', validate(z.object({ body: z.object({ objectKey: z.string().min(1) }) })), asyncHandler(vendorController.confirmUpload));
+apiRouter.post('/uploads/presign', authenticate, validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('msme') }) })), asyncHandler(vendorController.presignUpload));
+apiRouter.post('/uploads/confirm', authenticate, validate(z.object({ body: z.object({ objectKey: z.string().min(1) }) })), asyncHandler(vendorController.confirmUpload));
 // Any signed-in account may apply. The role is NOT a meaningful gate here:
 // vendor.service.submitApplication already requires the caller to have a
 // password-protected active account and to match the application's email and
@@ -131,6 +163,12 @@ apiRouter.post('/vendor-applications', authenticate, writeLimiter, validate(z.ob
 apiRouter.get('/vendor/dashboard', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.dashboard));
 apiRouter.post('/vendor/uploads/presign', authenticate, authorize(UserRole.VENDOR), validate(z.object({ body: z.object({ fileName: z.string().min(1), mimeType: z.string().min(1), size: z.number().int().positive(), category: z.literal('product') }) })), asyncHandler(vendorController.presignUpload));
 apiRouter.get('/vendor/products', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.products));
+apiRouter.get('/vendor/product-drafts', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.productDrafts));
+apiRouter.post('/vendor/product-drafts', authenticate, authorize(UserRole.VENDOR), writeLimiter, validate(z.object({ body: z.object({ payload: productDraftPayload }) })), asyncHandler(vendorController.saveProductDraft));
+apiRouter.get('/vendor/product-drafts/:id', authenticate, authorize(UserRole.VENDOR), validate(z.object({ params: idParams })), asyncHandler(vendorController.productDraft));
+apiRouter.put('/vendor/product-drafts/:id', authenticate, authorize(UserRole.VENDOR), writeLimiter, validate(z.object({ params: idParams, body: z.object({ payload: productDraftPayload }) })), asyncHandler(vendorController.saveProductDraft));
+apiRouter.delete('/vendor/product-drafts/:id', authenticate, authorize(UserRole.VENDOR), writeLimiter, validate(z.object({ params: idParams })), asyncHandler(vendorController.discardProductDraft));
+apiRouter.post('/vendor/product-drafts/:id/submit', authenticate, authorize(UserRole.VENDOR), writeLimiter, validate(z.object({ params: idParams })), asyncHandler(vendorController.submitProductDraft));
 apiRouter.get('/vendor/products/:id', authenticate, authorize(UserRole.VENDOR), validate(z.object({ params: idParams })), asyncHandler(vendorController.product));
 apiRouter.post('/vendor/products', authenticate, authorize(UserRole.VENDOR), validate(z.object({ body: productInput })), asyncHandler(vendorController.createProduct));
 apiRouter.post('/vendor/products/:id/submit', authenticate, authorize(UserRole.VENDOR), validate(z.object({ params: idParams })), asyncHandler(vendorController.submitProduct));
@@ -142,6 +180,9 @@ apiRouter.post('/vendor/payout-requests', authenticate, authorize(UserRole.VENDO
 
 apiRouter.get('/admin/analytics', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.analytics));
 apiRouter.get('/admin/access', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.access));
+apiRouter.get('/admin/homepage-video', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.homepageVideo));
+apiRouter.post('/admin/homepage-video/uploads/presign', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ fileName: z.string().min(1).max(200), mimeType: z.enum(['video/mp4', 'video/webm']), size: z.number().int().positive() }) })), asyncHandler(adminController.presignHomepageVideo));
+apiRouter.put('/admin/homepage-video', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ objectKey: z.string().min(1).nullable().optional(), enabled: z.boolean() }) })), asyncHandler(adminController.updateHomepageVideo));
 apiRouter.get('/admin/overview', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.overview));
 apiRouter.get('/admin/product-analytics', authenticate, authorize(UserRole.ADMIN), asyncHandler(productAnalyticsController.list));
 apiRouter.get('/admin/product-analytics/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(productAnalyticsController.detail));
@@ -189,6 +230,11 @@ apiRouter.post('/admin/team', authenticate, authorize(UserRole.ADMIN), validate(
 apiRouter.delete('/admin/team/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.removeTeamMember));
 apiRouter.patch('/admin/team/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({role:z.enum(['OPERATIONS','FINANCE','MARKETING','MODERATOR']).optional(),isActive:z.boolean().optional()})})), asyncHandler(adminController.updateTeamMember));
 apiRouter.get('/admin/haats', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.haats));
+apiRouter.get('/admin/categories', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.categories));
+apiRouter.post('/admin/categories', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:categoryInput})), asyncHandler(adminController.createCategory));
+apiRouter.put('/admin/categories/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:categoryInput})), asyncHandler(adminController.updateCategory));
+apiRouter.patch('/admin/categories/:id/active', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({isActive:z.boolean()})})), asyncHandler(adminController.setCategoryActive));
+apiRouter.delete('/admin/categories/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.deleteCategory));
 apiRouter.post('/admin/haats', authenticate, authorize(UserRole.ADMIN), validate(z.object({body:haatInput})), asyncHandler(adminController.saveHaat));
 apiRouter.put('/admin/haats/:id', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:haatInput})), asyncHandler(adminController.saveHaat));
 apiRouter.patch('/admin/haats/:id/toggle', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams,body:z.object({enabled:z.boolean()})})), asyncHandler(adminController.toggleHaat));
@@ -196,6 +242,7 @@ apiRouter.post('/admin/haats/:id/live', authenticate, authorize(UserRole.ADMIN),
 apiRouter.get('/admin/abandoned-carts', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.abandonedCarts));
 apiRouter.post('/admin/abandoned-carts/:id/reminder-opened', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:idParams})), asyncHandler(adminController.reminderOpened));
 apiRouter.get('/admin/vendor-applications', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.applications));
+apiRouter.get('/admin/vendor-applications/:applicationId/documents/:documentId/download', authenticate, authorize(UserRole.ADMIN), validate(z.object({params:z.object({applicationId:z.string().min(1),documentId:z.string().min(1)})})), asyncHandler(adminController.applicationDocument));
 apiRouter.post('/admin/vendor-applications/:id/moderate', authenticate, authorize(UserRole.ADMIN), validate(z.object({ params: idParams, body: z.object({ status: z.enum(['APPROVED','REJECTED','HOLD']), reason: z.string().trim().max(1000).optional() }) })), asyncHandler(adminController.moderate));
 apiRouter.get('/admin/products/moderation', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.productsForModeration));
 apiRouter.post('/admin/products/:id/moderate', authenticate, authorize(UserRole.ADMIN), validate(z.object({ params: idParams, body: z.object({ decision: z.enum(['APPROVE','REJECT','SUSPEND']), reason: z.string().trim().max(1000).optional() }) })), asyncHandler(adminController.moderateProduct));
