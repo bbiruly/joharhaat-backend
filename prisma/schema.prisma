@@ -326,6 +326,7 @@ model Category {
   products             Product[]
   managedHaatOverrides ManagedHaatOverride[]
 
+  @@index([isActive, displayOrder])
   @@map("categories")
 }
 
