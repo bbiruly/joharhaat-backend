@@ -13,11 +13,47 @@ analytics aggregation. Configure independent health/restart policies for both.
 ## Razorpay
 
 Set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and
-`RAZORPAY_WEBHOOK_SECRET`. Register
+`RAZORPAY_WEBHOOK_SECRET` on the API only. The browser receives the public key
+ID and a server-created Razorpay order through `POST /api/v1/payments/intents`;
+it sends the Checkout order ID, payment ID and signature to
+`POST /api/v1/payments/intents/:id/verify`. The API verifies the signature and
+fetches the payment from Razorpay before marking the order paid. Do not add a
+client-supplied success/failure confirmation path.
+
+The storefront launches Razorpay Standard Checkout with UPI as its only visible
+method. Keep UPI enabled and all other methods disabled in the Razorpay
+Dashboard as a second guard. Register
 `POST /api/v1/payments/razorpay/webhook` for `payment.captured` and
-`payment.failed`. Only UPI is enabled in this release; disable other methods in
-the Razorpay dashboard as a second guard. Use auto-capture and test-mode keys in
-staging.
+`payment.failed`; configure auto-capture. Use Razorpay test-mode keys in local
+development/staging, then replace them with live-mode credentials and complete
+a live end-to-end acceptance payment before production traffic. Razorpay test
+mode is a gateway test transaction, not a real customer charge.
+
+## GST and checkout amounts
+
+Product prices shown to customers include GST. Configure each product's HSN
+code and GST rate in **Admin → Product tax** after verifying its classification;
+checkout refuses a product whose classification is still missing. Rates and
+the computed taxable value and tax components are snapshotted on each order
+item so later catalog edits do not alter existing orders or invoices.
+
+Set `GST_REGISTRATION_STATE` to the supplier's registered state. The customer's
+saved address state determines whether product tax is split into CGST/SGST or
+charged as IGST. Set `DELIVERY_GST_RATE` only after confirming how the courier
+charge is invoiced; this rate is applied separately to the delivery fee and
+added to the customer total. The example defaults to zero and must be reviewed
+with the marketplace's tax advisor before production. Historical orders retain
+their stored amounts and are not recalculated.
+
+## Delivery coverage and fees
+
+Checkout uses the destination PIN's configured courier fee, with the editable
+free-delivery threshold applied to the merchandise subtotal after coupons and
+before tax. Import and review the courier coverage CSV under **Admin → Settings
+→ Delivery coverage & fees**, then enable PIN pricing. Until rates are enabled,
+checkout marks delivery unavailable and does not apply a universal fallback
+charge. Unknown or non-serviceable PINs are rejected; do not enable the policy
+until the courier file has been reviewed.
 
 ## S3 and CloudFront
 

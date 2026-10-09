@@ -10,6 +10,7 @@ import { env, integrations } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
 import { razorpay, rupeesToPaise, verifyPaymentSignature } from './razorpay.service.js';
+import { recalculateOrderCommissions } from './influencer-commission.service.js';
 
 const terminalIntentStatuses: PaymentIntentStatus[] = [PaymentIntentStatus.SUCCEEDED, PaymentIntentStatus.FAILED, PaymentIntentStatus.CANCELLED, PaymentIntentStatus.EXPIRED];
 const activeIntentStatuses: PaymentIntentStatus[] = [PaymentIntentStatus.CREATED, PaymentIntentStatus.PROCESSING];
@@ -50,13 +51,22 @@ async function finalizeCoupon(tx: Prisma.TransactionClient, orderId: string) {
 }
 
 export async function createIntent(userId: string, orderId: string, method: PaymentMethod, idempotencyKey: string) {
+  if (method !== PaymentMethod.UPI) throw new ApiError(422, 'Only UPI is available in this release.', 'PAYMENT_METHOD_UNAVAILABLE');
   if (!integrations.razorpay) throw new ApiError(503, 'Online payments are not configured in this environment.', 'PAYMENT_PROVIDER_NOT_CONFIGURED');
+
+  const expired = await prisma.paymentIntent.findMany({
+    where: { orderId, status: { in: activeIntentStatuses }, expiresAt: { lte: new Date() } },
+    select: { id: true },
+  });
+  for (const intent of expired)
+    await transitionIntent(userId, intent.id, PaymentIntentStatus.EXPIRED, `expiry:${intent.id}`);
+
   const existing = await prisma.paymentIntent.findUnique({ where: { idempotencyKey }, include: { order: true } });
   if (existing) {
     if (existing.order.customerId !== userId || existing.orderId !== orderId) throw new ApiError(409, 'This idempotency key belongs to another payment.', 'IDEMPOTENCY_KEY_CONFLICT');
+    if (existing.method !== method) throw new ApiError(409, 'This idempotency key belongs to another payment method.', 'IDEMPOTENCY_KEY_CONFLICT');
     return checkoutIntent(existing);
   }
-  if (method !== PaymentMethod.UPI) throw new ApiError(422, 'Only UPI is available in this release.', 'PAYMENT_METHOD_UNAVAILABLE');
   const intent = await prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({ where: { id: orderId, customerId: userId } });
     if (!order) throw new ApiError(404, 'Order was not found.', 'ORDER_NOT_FOUND');
@@ -106,6 +116,7 @@ export async function transitionIntent(userId: string, intentId: string, status:
 
     if (status === PaymentIntentStatus.SUCCEEDED) {
       await tx.order.update({ where: { id: intent.orderId }, data: { paymentStatus: intent.method === PaymentMethod.COD ? PaymentStatus.AUTHORIZED : PaymentStatus.PAID } });
+      await recalculateOrderCommissions(tx, intent.orderId);
       await tx.inventoryReservation.updateMany({ where: { paymentIntentId: intent.id, status: ReservationStatus.ACTIVE }, data: { status: ReservationStatus.CONSUMED } });
       await finalizeCoupon(tx, intent.orderId);
       if (intent.order.customer.email) await tx.emailOutbox.upsert({ where: { dedupeKey: `order-paid:${intent.orderId}` }, update: {}, create: { dedupeKey: `order-paid:${intent.orderId}`, recipient: intent.order.customer.email, subject: `Payment confirmed for ${intent.order.orderNumber}`, template: 'order-paid', payload: { name: intent.order.customer.name, orderNumber: intent.order.orderNumber } } });
@@ -126,7 +137,7 @@ export async function verifyCheckout(userId: string, intentId: string, input: { 
   if (!intent || !intent.providerOrderId) throw new ApiError(404, 'Payment intent was not found.', 'PAYMENT_INTENT_NOT_FOUND');
   if (intent.providerOrderId !== input.razorpayOrderId || !verifyPaymentSignature(intent.providerOrderId, input.razorpayPaymentId, input.razorpaySignature)) throw new ApiError(401, 'Payment signature is invalid.', 'INVALID_PAYMENT_SIGNATURE');
   const providerPayment = await razorpay.payments.fetch(input.razorpayPaymentId);
-  if (providerPayment.order_id !== intent.providerOrderId || Number(providerPayment.amount) !== rupeesToPaise(intent.amount.toFixed(2)) || providerPayment.currency !== 'INR' || !['authorized','captured'].includes(String(providerPayment.status))) throw new ApiError(409, 'Payment provider state does not match this order.', 'PAYMENT_STATE_MISMATCH');
+  if (providerPayment.order_id !== intent.providerOrderId || Number(providerPayment.amount) !== rupeesToPaise(intent.amount.toFixed(2)) || providerPayment.currency !== 'INR' || providerPayment.status !== 'captured') throw new ApiError(409, 'Payment provider state does not match this order.', 'PAYMENT_STATE_MISMATCH');
   await prisma.paymentIntent.update({ where: { id: intent.id }, data: { providerPaymentId: input.razorpayPaymentId, verifiedAt: new Date() } });
   return transitionIntent(userId, intent.id, PaymentIntentStatus.SUCCEEDED, `checkout:${input.razorpayPaymentId}`);
 }

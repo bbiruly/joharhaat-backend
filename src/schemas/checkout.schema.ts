@@ -25,4 +25,5 @@ export type CheckoutInput = z.infer<typeof checkoutBodySchema>;
 
 export const checkoutQuoteBodySchema = z.object({
   couponCode: z.string().trim().toUpperCase().max(30).optional(),
+  deliveryAddressId: z.string().trim().min(1).optional(),
 });

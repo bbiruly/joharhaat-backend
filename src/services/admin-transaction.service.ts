@@ -220,6 +220,8 @@ export async function transaction(userId: string, id: string) {
           discount: true,
           cgst: true,
           sgst: true,
+          igst: true,
+          taxBreakdown: true,
           courierCharge: true,
           totalPayable: true,
           paymentStatus: true,

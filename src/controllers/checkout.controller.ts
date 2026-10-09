@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
 import type { CheckoutInput } from '../schemas/checkout.schema.js';
-import { processCheckout, quoteCheckout } from '../services/checkout.service.js';
+import { checkoutOffers, processCheckout, quoteCheckout } from '../services/checkout.service.js';
 import { dispatchVendorSmsOutbox } from '../services/sms.service.js';
 
 export const checkoutController: RequestHandler = async (request, response) => {
@@ -11,5 +11,9 @@ export const checkoutController: RequestHandler = async (request, response) => {
 };
 
 export const checkoutQuoteController: RequestHandler = async (request, response) => {
-  response.json({ data: await quoteCheckout(request.auth!.userId, request.body.couponCode) });
+  response.json({ data: await quoteCheckout(request.auth!.userId, request.body.couponCode, request.body.deliveryAddressId) });
+};
+
+export const checkoutOffersController: RequestHandler = async (request, response) => {
+  response.json({ data: await checkoutOffers(request.auth!.userId) });
 };

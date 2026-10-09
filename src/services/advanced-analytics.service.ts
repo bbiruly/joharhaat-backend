@@ -23,7 +23,7 @@ const since=(days:number)=>new Date(Date.now()-Math.min(365,Math.max(1,days))*86
 const lastRun=()=>prisma.analyticsAggregationRun.findFirst({where:{status:'SUCCEEDED'},orderBy:{completedAt:'desc'},select:{completedAt:true}});
 
 /** Districts are stored SCREAMING_SNAKE and displayed with spaces (§7). */
-const districtName = (district: JharkhandDistrict) => district.replaceAll('_', ' ');
+const districtName = (district: string) => district.replaceAll('_', ' ');
 
 // ---------------------------------------------------------------------------
 // Demand window + forecast maths (pure, unit-tested in tests/)
@@ -267,7 +267,7 @@ export async function inventoryIntelligence(userId: string, query: InventoryQuer
       lowStockThreshold: COMMERCE.lowStockThreshold,
     });
 
-    const byDistrict = new Map<JharkhandDistrict, number>();
+    const byDistrict = new Map<string, number>();
     for (const line of lines) {
       byDistrict.set(line.district, (byDistrict.get(line.district) ?? 0) + line.quantity);
     }
@@ -348,7 +348,7 @@ function averageDaysOfCover(items: readonly { daysOfCover: number | null }[]) {
 // ---------------------------------------------------------------------------
 
 interface DistrictBucket {
-  district: JharkhandDistrict;
+  district: string;
   unitsSold: number;
   gmv: Prisma.Decimal;
   orders: number;
@@ -359,7 +359,7 @@ interface DistrictBucket {
   variants: Set<string>;
 }
 
-const emptyBucket = (district: JharkhandDistrict): DistrictBucket => ({
+const emptyBucket = (district: string): DistrictBucket => ({
   district,
   unitsSold: 0,
   gmv: new Prisma.Decimal(0),
@@ -400,8 +400,8 @@ export async function districtAnalytics(userId: string, query: { days?: unknown 
     }),
   ]);
 
-  const buckets = new Map<JharkhandDistrict, DistrictBucket>();
-  const bucketFor = (district: JharkhandDistrict) => {
+  const buckets = new Map<string, DistrictBucket>();
+  const bucketFor = (district: string) => {
     const existing = buckets.get(district);
     if (existing) return existing;
     const created = emptyBucket(district);
@@ -599,7 +599,7 @@ async function aggregateDistrictDaily(day: Date) {
 
   interface Row {
     productId: string;
-    district: JharkhandDistrict;
+    district: string;
     views: number;
     cartAdds: number;
     unitsSold: number;
@@ -609,7 +609,7 @@ async function aggregateDistrictDaily(day: Date) {
   }
 
   const rows = new Map<string, Row>();
-  const rowFor = (productId: string, district: JharkhandDistrict) => {
+  const rowFor = (productId: string, district: string) => {
     const key = `${productId}:${district}`;
     const existing = rows.get(key);
     if (existing) return existing;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertCouponValid, couponState } from '../src/services/admin-coupon.service.js';
+import { assertCouponValid, couponState, publicOfferVisibility } from '../src/services/admin-coupon.service.js';
 import { ApiError } from '../src/utils/api-error.js';
 
 /**
@@ -95,4 +95,12 @@ describe('coupon state', () => {
 
   it('does not call an unlimited coupon exhausted', () =>
     expect(couponState({ ...base, usageLimit: null, usedCount: 9999 })).toBe('ACTIVE'));
+});
+
+describe('public checkout offer default', () => {
+  it('keeps new and legacy API requests hidden unless an admin explicitly enables visibility', () => {
+    expect(publicOfferVisibility()).toBe(false);
+    expect(publicOfferVisibility(false)).toBe(false);
+    expect(publicOfferVisibility(true)).toBe(true);
+  });
 });

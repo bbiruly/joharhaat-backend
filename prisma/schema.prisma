@@ -160,6 +160,17 @@ enum ProductLifecycleStatus {
   ARCHIVED
 }
 
+enum FeaturedEndorsementType {
+  CELEBRITY
+  GOVERNMENT_OFFICIAL
+}
+
+enum FeaturedEndorsementStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
 enum AdminTeamRole {
   SUPER_ADMIN
   OPERATIONS
@@ -216,38 +227,43 @@ enum ForecastConfidence {
 }
 
 model User {
-  id                     String                  @id @default(cuid())
-  email                  String?                 @unique
-  mobile                 String                  @unique
-  passwordHash           String?                 @map("password_hash")
+  id                     String                       @id @default(cuid())
+  email                  String?                      @unique
+  mobile                 String                       @unique
+  passwordHash           String?                      @map("password_hash")
   name                   String
-  role                   UserRole                @default(CUSTOMER)
-  isActive               Boolean                 @default(true) @map("is_active")
+  role                   UserRole                     @default(CUSTOMER)
+  isActive               Boolean                      @default(true) @map("is_active")
   /// Per-account brute-force lockout. IP rate limiting alone does not stop a
   /// distributed attempt against one account; these track the account itself.
-  failedLoginCount       Int                     @default(0) @map("failed_login_count")
-  lockedUntil            DateTime?               @map("locked_until")
-  createdAt              DateTime                @default(now()) @map("created_at")
-  updatedAt              DateTime                @updatedAt @map("updated_at")
+  failedLoginCount       Int                          @default(0) @map("failed_login_count")
+  lockedUntil            DateTime?                    @map("locked_until")
+  createdAt              DateTime                     @default(now()) @map("created_at")
+  updatedAt              DateTime                     @updatedAt @map("updated_at")
   vendor                 Vendor?
   addresses              Address[]
   carts                  Cart[]
   orders                 Order[]
-  statusLogs             OrderStatusLog[]        @relation("StatusActor")
+  statusLogs             OrderStatusLog[]             @relation("StatusActor")
   authSessions           AuthSession[]
   resetTokens            PasswordResetToken[]
   wishlist               WishlistItem[]
   couponUses             CouponRedemption[]
-  applications           VendorApplication[]     @relation("ApplicationOwner")
-  moderationAudits       ModerationAudit[]       @relation("Moderator")
-  adminAudits            AdminAuditLog[]         @relation("AdminActor")
-  productReviews         Product[]               @relation("ProductReviewer")
+  influencers            Influencer[]                 @relation("InfluencerActor")
+  influencerLedger       InfluencerCommissionLedger[] @relation("InfluencerLedgerActor")
+  applications           VendorApplication[]          @relation("ApplicationOwner")
+  moderationAudits       ModerationAudit[]            @relation("Moderator")
+  adminAudits            AdminAuditLog[]              @relation("AdminActor")
+  processedPayoutRequests PayoutRequest[]               @relation("PayoutProcessor")
+  productReviews         Product[]                    @relation("ProductReviewer")
   adminMembership        AdminMembership?
   adminNotificationReads AdminNotificationRead[]
   productAnalyticsEvents ProductAnalyticsEvent[]
   reviews                Review[]
-  reviewReports          ReviewReport[]          @relation("ReviewReporter")
-  hiddenReviews          Review[]                @relation("ReviewHiddenBy")
+  reviewReports          ReviewReport[]               @relation("ReviewReporter")
+  hiddenReviews          Review[]                     @relation("ReviewHiddenBy")
+  endorsementConfirmations FeaturedEndorsement[]       @relation("EndorsementConfirmer")
+  publishedEndorsements  FeaturedEndorsement[]        @relation("EndorsementPublisher")
 
   @@map("users")
 }
@@ -261,16 +277,18 @@ model Address {
   line1      String
   line2      String?
   landmark   String?
-  district   JharkhandDistrict
-  state      String            @default("Jharkhand")
+  district   String
+  state      String
   postalCode String            @map("postal_code")
   isDefault  Boolean           @default(false) @map("is_default")
+  isArchived Boolean           @default(false) @map("is_archived")
   createdAt  DateTime          @default(now()) @map("created_at")
   updatedAt  DateTime          @updatedAt @map("updated_at")
   user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   orders     Order[]
 
   @@index([userId, isDefault])
+  @@index([userId, isArchived, isDefault])
   @@map("addresses")
 }
 
@@ -361,6 +379,8 @@ model Product {
   district         JharkhandDistrict?
   weeklyHaatDay    WeeklyHaatDay?          @map("weekly_haat_day")
   minPrice         Decimal                 @map("min_price") @db.Decimal(12, 2)
+  taxHsnCode       String?                 @map("tax_hsn_code")
+  gstRate          Decimal?                @map("gst_rate") @db.Decimal(5, 2)
   isPublished      Boolean                 @default(false) @map("is_published")
   lifecycleStatus  ProductLifecycleStatus  @default(DRAFT) @map("lifecycle_status")
   moderationReason String?                 @map("moderation_reason")
@@ -496,7 +516,7 @@ model ProductHealthSnapshot {
 model ProductDistrictDailyAggregate {
   id           String            @id @default(cuid())
   productId    String            @map("product_id")
-  district     JharkhandDistrict
+  district     String
   date         DateTime          @db.Date
   views        Int               @default(0)
   cartAdds     Int               @default(0) @map("cart_adds")
@@ -630,16 +650,26 @@ model Order {
   discount          Decimal           @default(0) @db.Decimal(14, 2)
   cgst              Decimal           @db.Decimal(14, 2)
   sgst              Decimal           @db.Decimal(14, 2)
+  igst              Decimal?          @db.Decimal(14, 2)
   courierCharge     Decimal           @map("courier_charge") @db.Decimal(12, 2)
+  deliveryTaxRate   Decimal?          @map("delivery_tax_rate") @db.Decimal(5, 2)
+  deliveryTaxable   Decimal?          @map("delivery_taxable") @db.Decimal(12, 2)
+  deliveryCgst      Decimal?          @map("delivery_cgst") @db.Decimal(12, 2)
+  deliverySgst      Decimal?          @map("delivery_sgst") @db.Decimal(12, 2)
+  deliveryIgst      Decimal?          @map("delivery_igst") @db.Decimal(12, 2)
+  taxBreakdown      Json?             @map("tax_breakdown")
   totalPayable      Decimal           @map("total_payable") @db.Decimal(14, 2)
   paymentStatus     PaymentStatus     @default(PENDING) @map("payment_status")
   couponCode        String?           @map("coupon_code")
+  influencerId      String?           @map("influencer_id")
+  influencerRate    Decimal?          @map("influencer_rate") @db.Decimal(5, 4)
   couponFinalized   Boolean           @default(false) @map("coupon_finalized")
   recipientName     String            @map("recipient_name")
   recipientMobile   String            @map("recipient_mobile")
   addressLine1      String            @map("address_line1")
   addressLine2      String?           @map("address_line2")
-  district          JharkhandDistrict
+  district          String
+  recipientState    String?           @map("recipient_state")
   postalCode        String            @map("postal_code")
   createdAt         DateTime          @default(now()) @map("created_at")
   updatedAt         DateTime          @updatedAt @map("updated_at")
@@ -649,6 +679,7 @@ model Order {
   vendorOrders      VendorOrder[]
   paymentIntents    PaymentIntent[]
   couponRedemption  CouponRedemption?
+  influencer        Influencer?       @relation(fields: [influencerId], references: [id], onDelete: SetNull)
   reviews           Review[]
 
   @@index([customerId, createdAt])
@@ -660,27 +691,31 @@ model Order {
 }
 
 model VendorOrder {
-  id              String               @id @default(cuid())
-  orderId         String               @map("order_id")
-  vendorId        String               @map("vendor_id")
-  trackingId      String               @unique @map("tracking_id")
-  status          FulfillmentStatus    @default(PENDING)
-  payoutStatus    PayoutStatus         @default(PENDING) @map("payout_status")
-  gmv             Decimal              @db.Decimal(14, 2)
-  adminCommission Decimal              @map("admin_commission") @db.Decimal(14, 2)
-  cgst            Decimal              @db.Decimal(14, 2)
-  sgst            Decimal              @db.Decimal(14, 2)
-  courierCharge   Decimal              @map("courier_charge") @db.Decimal(12, 2)
-  netVendorPayout Decimal              @map("net_vendor_payout") @db.Decimal(14, 2)
-  deliveredAt     DateTime?            @map("delivered_at")
-  createdAt       DateTime             @default(now()) @map("created_at")
-  updatedAt       DateTime             @updatedAt @map("updated_at")
-  order           Order                @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  vendor          Vendor               @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  items           OrderItem[]
-  statusLogs      OrderStatusLog[]
-  walletLedgers   WalletLedger[]
-  notifications   NotificationOutbox[]
+  id                   String                @id @default(cuid())
+  orderId              String                @map("order_id")
+  vendorId             String                @map("vendor_id")
+  trackingId           String                @unique @map("tracking_id")
+  carrierName          String?               @map("carrier_name")
+  carrierTrackingId    String?               @map("carrier_tracking_id")
+  status               FulfillmentStatus     @default(PENDING)
+  payoutStatus         PayoutStatus          @default(PENDING) @map("payout_status")
+  gmv                  Decimal               @db.Decimal(14, 2)
+  adminCommission      Decimal               @map("admin_commission") @db.Decimal(14, 2)
+  cgst                 Decimal               @db.Decimal(14, 2)
+  sgst                 Decimal               @db.Decimal(14, 2)
+  igst                 Decimal?              @db.Decimal(14, 2)
+  courierCharge        Decimal               @map("courier_charge") @db.Decimal(12, 2)
+  netVendorPayout      Decimal               @map("net_vendor_payout") @db.Decimal(14, 2)
+  deliveredAt          DateTime?             @map("delivered_at")
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+  order                Order                 @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  vendor               Vendor                @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  items                OrderItem[]
+  statusLogs           OrderStatusLog[]
+  walletLedgers        WalletLedger[]
+  notifications        NotificationOutbox[]
+  influencerCommission InfluencerCommission?
 
   @@unique([orderId, vendorId])
   @@index([vendorId, status, createdAt])
@@ -701,6 +736,13 @@ model OrderItem {
   quantity      Int
   unitPrice     Decimal        @map("unit_price") @db.Decimal(12, 2)
   lineTotal     Decimal        @map("line_total") @db.Decimal(14, 2)
+  discountAmount Decimal?      @map("discount_amount") @db.Decimal(14, 2)
+  taxHsnCode    String?        @map("tax_hsn_code")
+  gstRate       Decimal?       @map("gst_rate") @db.Decimal(5, 2)
+  taxableValue  Decimal?       @map("taxable_value") @db.Decimal(14, 2)
+  cgst          Decimal?       @db.Decimal(14, 2)
+  sgst          Decimal?       @db.Decimal(14, 2)
+  igst          Decimal?       @db.Decimal(14, 2)
   vendorOrder   VendorOrder    @relation(fields: [vendorOrderId], references: [id], onDelete: Cascade)
   variant       ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
 
@@ -725,7 +767,8 @@ model OrderStatusLog {
 model WalletLedger {
   id            String          @id @default(cuid())
   vendorId      String          @map("vendor_id")
-  vendorOrderId String          @map("vendor_order_id")
+  vendorOrderId String?         @map("vendor_order_id")
+  payoutRequestId String?       @unique @map("payout_request_id")
   type          LedgerType
   direction     LedgerDirection
   amount        Decimal         @db.Decimal(14, 2)
@@ -734,7 +777,8 @@ model WalletLedger {
   metadata      Json?
   createdAt     DateTime        @default(now()) @map("created_at")
   vendor        Vendor          @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  vendorOrder   VendorOrder     @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  vendorOrder   VendorOrder?    @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  payoutRequest PayoutRequest?  @relation(fields: [payoutRequestId], references: [id], onDelete: Restrict)
 
   @@unique([vendorId, vendorOrderId, type])
   @@index([vendorId, createdAt])
@@ -826,22 +870,92 @@ model WishlistItem {
 }
 
 model Coupon {
-  id            String             @id @default(cuid())
-  code          String             @unique
-  percent       Decimal            @db.Decimal(5, 4)
-  maxDiscount   Decimal            @map("max_discount") @db.Decimal(12, 2)
-  minOrderValue Decimal            @default(0) @map("min_order_value") @db.Decimal(12, 2)
-  startsAt      DateTime           @map("starts_at")
-  expiresAt     DateTime           @map("expires_at")
-  usageLimit    Int?               @map("usage_limit")
-  perUserLimit  Int                @default(1) @map("per_user_limit")
-  usedCount     Int                @default(0) @map("used_count")
-  isActive      Boolean            @default(true) @map("is_active")
-  createdAt     DateTime           @default(now()) @map("created_at")
-  redemptions   CouponRedemption[]
+  id                   String             @id @default(cuid())
+  code                 String             @unique
+  percent              Decimal            @db.Decimal(5, 4)
+  maxDiscount          Decimal            @map("max_discount") @db.Decimal(12, 2)
+  minOrderValue        Decimal            @default(0) @map("min_order_value") @db.Decimal(12, 2)
+  startsAt             DateTime           @map("starts_at")
+  expiresAt            DateTime           @map("expires_at")
+  usageLimit           Int?               @map("usage_limit")
+  perUserLimit         Int                @default(1) @map("per_user_limit")
+  usedCount            Int                @default(0) @map("used_count")
+  isActive             Boolean            @default(true) @map("is_active")
+  showInCheckoutOffers Boolean            @default(false) @map("show_in_checkout_offers")
+  createdAt            DateTime           @default(now()) @map("created_at")
+  redemptions          CouponRedemption[]
+  influencerId         String?            @map("influencer_id")
+  commissionRate       Decimal?           @map("commission_rate") @db.Decimal(5, 4)
+  influencer           Influencer?        @relation(fields: [influencerId], references: [id], onDelete: SetNull)
 
   @@index([isActive, startsAt, expiresAt])
   @@map("coupons")
+}
+
+model Influencer {
+  id            String                       @id @default(cuid())
+  createdById   String                       @map("created_by_id")
+  name          String
+  email         String?
+  mobile        String?
+  defaultRate   Decimal                      @map("default_rate") @db.Decimal(5, 4)
+  isActive      Boolean                      @default(true) @map("is_active")
+  createdAt     DateTime                     @default(now()) @map("created_at")
+  updatedAt     DateTime                     @updatedAt @map("updated_at")
+  coupons       Coupon[]
+  orders        Order[]
+  commissions   InfluencerCommission[]
+  ledgerEntries InfluencerCommissionLedger[]
+  createdBy     User                         @relation("InfluencerActor", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([isActive, name])
+  @@map("influencers")
+}
+
+model InfluencerCommission {
+  id                  String                       @id @default(cuid())
+  influencerId        String                       @map("influencer_id")
+  vendorOrderId       String                       @unique @map("vendor_order_id")
+  rate                Decimal                      @db.Decimal(5, 4)
+  productSubtotal     Decimal                      @map("product_subtotal") @db.Decimal(14, 2)
+  allocatedDiscount   Decimal                      @map("allocated_discount") @db.Decimal(14, 2)
+  refundedMerchandise Decimal                      @default(0) @map("refunded_merchandise") @db.Decimal(14, 2)
+  earnedAmount        Decimal                      @default(0) @map("earned_amount") @db.Decimal(14, 2)
+  payableAmount       Decimal                      @default(0) @map("payable_amount") @db.Decimal(14, 2)
+  paidAmount          Decimal                      @default(0) @map("paid_amount") @db.Decimal(14, 2)
+  createdAt           DateTime                     @default(now()) @map("created_at")
+  updatedAt           DateTime                     @updatedAt @map("updated_at")
+  influencer          Influencer                   @relation(fields: [influencerId], references: [id], onDelete: Restrict)
+  vendorOrder         VendorOrder                  @relation(fields: [vendorOrderId], references: [id], onDelete: Restrict)
+  ledgerEntries       InfluencerCommissionLedger[]
+
+  @@index([influencerId, createdAt])
+  @@map("influencer_commissions")
+}
+
+enum InfluencerCommissionLedgerType {
+  REFUND_REVERSAL
+  SETTLEMENT
+}
+
+model InfluencerCommissionLedger {
+  id           String                         @id @default(cuid())
+  influencerId String                         @map("influencer_id")
+  commissionId String                         @map("commission_id")
+  type         InfluencerCommissionLedgerType
+  amount       Decimal                        @db.Decimal(14, 2)
+  reference    String?
+  requestKey   String?                        @unique @map("request_key")
+  refundAmount Decimal?                       @map("refund_amount") @db.Decimal(14, 2)
+  actorId      String                         @map("actor_id")
+  createdAt    DateTime                       @default(now()) @map("created_at")
+  influencer   Influencer                     @relation(fields: [influencerId], references: [id], onDelete: Restrict)
+  commission   InfluencerCommission           @relation(fields: [commissionId], references: [id], onDelete: Restrict)
+  actor        User                           @relation("InfluencerLedgerActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([influencerId, createdAt])
+  @@index([commissionId, createdAt])
+  @@map("influencer_commission_ledger")
 }
 
 model CouponRedemption {
@@ -975,9 +1089,14 @@ model PayoutRequest {
   amount      Decimal             @db.Decimal(14, 2)
   status      PayoutRequestStatus @default(PENDING)
   reference   String              @unique
+  settlementReference String?     @unique @map("settlement_reference")
+  decisionReason String?          @map("decision_reason")
+  processedById String?           @map("processed_by_id")
   requestedAt DateTime            @default(now()) @map("requested_at")
   processedAt DateTime?           @map("processed_at")
   vendor      Vendor              @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  processedBy User?               @relation("PayoutProcessor", fields: [processedById], references: [id], onDelete: SetNull)
+  walletLedger WalletLedger?
 
   @@index([vendorId, status])
   @@map("payout_requests")
@@ -1039,6 +1158,60 @@ model HomepageVideo {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   @@map("homepage_video")
+}
+
+/// Brand-wide public-figure feedback. Kept separate from verified customer reviews.
+model FeaturedEndorsement {
+  id                  String                    @id @default(cuid())
+  type                FeaturedEndorsementType
+  displayName         String                    @map("display_name") @db.VarChar(120)
+  role                String                    @db.VarChar(160)
+  organization        String?                   @db.VarChar(160)
+  quote               String                    @db.VarChar(1200)
+  imageObjectKey      String?                   @map("image_object_key")
+  imageUrl            String?                   @map("image_url")
+  imageAltText        String?                   @map("image_alt_text") @db.VarChar(200)
+  videoObjectKey      String?                   @map("video_object_key")
+  videoUrl            String?                   @map("video_url")
+  displayOrder        Int                       @default(0) @map("display_order")
+  status              FeaturedEndorsementStatus @default(DRAFT)
+  identityConfirmedAt DateTime?                 @map("identity_confirmed_at")
+  consentConfirmedAt  DateTime?                 @map("consent_confirmed_at")
+  confirmedById       String?                   @map("confirmed_by_id")
+  publishedAt         DateTime?                 @map("published_at")
+  publishedById       String?                   @map("published_by_id")
+  createdAt           DateTime                  @default(now()) @map("created_at")
+  updatedAt           DateTime                  @updatedAt @map("updated_at")
+  confirmedBy         User?                     @relation("EndorsementConfirmer", fields: [confirmedById], references: [id], onDelete: SetNull)
+  publishedBy         User?                     @relation("EndorsementPublisher", fields: [publishedById], references: [id], onDelete: SetNull)
+
+  @@index([status, displayOrder, createdAt])
+  @@map("featured_endorsements")
+}
+
+model DeliverySettings {
+  id                    String   @id @default("default")
+  isPinPricingEnabled   Boolean  @default(false) @map("is_pin_pricing_enabled")
+  freeDeliveryThreshold Decimal  @default(1500) @map("free_delivery_threshold") @db.Decimal(12, 2)
+  updatedById           String?  @map("updated_by_id")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("delivery_settings")
+}
+
+model DeliveryPincode {
+  postalCode   String   @id @map("postal_code") @db.VarChar(6)
+  state        String   @db.VarChar(80)
+  district     String   @db.VarChar(120)
+  isServiceable Boolean  @default(true) @map("is_serviceable")
+  deliveryFee  Decimal  @map("delivery_fee") @db.Decimal(12, 2)
+  updatedById  String?  @map("updated_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([state, district])
+  @@index([isServiceable, state])
+  @@map("delivery_pincodes")
 }
 
 model AdminNotification {

@@ -4,6 +4,7 @@ import { ApiError } from '../utils/api-error.js';
 import { pagination } from '../utils/pagination.js';
 import { writeAudit } from '../utils/audit-log.js';
 import { adminAccess } from './admin.service.js';
+import { assertRate } from './influencer-commission.service.js';
 
 /**
  * Coupon administration.
@@ -29,6 +30,7 @@ const MANAGE_PERMISSION = 'marketing:manage' as const;
 const MAX_PERCENT = 90;
 const toFraction = (percent: number) => new Prisma.Decimal(percent).dividedBy(100);
 const toPercent = (fraction: Prisma.Decimal) => fraction.mul(100).toNumber();
+export const publicOfferVisibility = (value?: boolean) => value === true;
 
 const asText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
 
@@ -42,6 +44,9 @@ export interface CouponInput {
   usageLimit: number | null;
   perUserLimit: number;
   isActive: boolean;
+  showInCheckoutOffers?: boolean;
+  influencerId?: string | null;
+  commissionRate?: number | null;
 }
 
 /**
@@ -126,7 +131,11 @@ const shape = (coupon: {
   perUserLimit: number;
   usedCount: number;
   isActive: boolean;
+  showInCheckoutOffers: boolean;
   createdAt: Date;
+  influencerId?: string | null;
+  commissionRate?: Prisma.Decimal | null;
+  influencer?: { id: string; name: string; defaultRate: Prisma.Decimal } | null;
   _count?: { redemptions: number };
 }) => ({
   id: coupon.id,
@@ -140,10 +149,25 @@ const shape = (coupon: {
   perUserLimit: coupon.perUserLimit,
   usedCount: coupon.usedCount,
   isActive: coupon.isActive,
+  showInCheckoutOffers: coupon.showInCheckoutOffers,
   createdAt: coupon.createdAt,
   redemptions: coupon._count?.redemptions ?? 0,
   state: couponState(coupon),
+  influencerId: coupon.influencerId ?? null,
+  influencer: coupon.influencer ? { id: coupon.influencer.id, name: coupon.influencer.name, defaultRate: toPercent(coupon.influencer.defaultRate) } : null,
+  commissionRate: coupon.commissionRate ? toPercent(coupon.commissionRate) : null,
 });
+
+async function influencerCouponData(input: CouponInput) {
+  if (!input.influencerId) return { influencerId: null, commissionRate: null };
+  const influencer = await prisma.influencer.findUnique({ where: { id: input.influencerId } });
+  if (!influencer || !influencer.isActive) throw new ApiError(422, 'Choose an active influencer.', 'INFLUENCER_NOT_AVAILABLE');
+  if (input.commissionRate !== null && input.commissionRate !== undefined) {
+    assertRate(input.commissionRate);
+    return { influencerId: influencer.id, commissionRate: toFraction(input.commissionRate) };
+  }
+  return { influencerId: influencer.id, commissionRate: null };
+}
 
 export async function coupons(
   userId: string,
@@ -161,7 +185,7 @@ export async function coupons(
       orderBy: { createdAt: 'desc' },
       skip,
       take,
-      include: { _count: { select: { redemptions: true } } },
+      include: { _count: { select: { redemptions: true } }, influencer: true },
     }),
     prisma.coupon.count({ where }),
   ]);
@@ -184,6 +208,7 @@ export async function coupons(
 export async function createCoupon(userId: string, requestId: string | undefined, input: CouponInput) {
   await adminAccess(userId, MANAGE_PERMISSION);
   const { code, startsAt, expiresAt } = assertCouponValid(input);
+  const attribution = await influencerCouponData(input);
 
   const existing = await prisma.coupon.findUnique({ where: { code }, select: { id: true } });
   if (existing)
@@ -200,8 +225,10 @@ export async function createCoupon(userId: string, requestId: string | undefined
       usageLimit: input.usageLimit,
       perUserLimit: input.perUserLimit,
       isActive: input.isActive,
+      showInCheckoutOffers: publicOfferVisibility(input.showInCheckoutOffers),
+      ...attribution,
     },
-    include: { _count: { select: { redemptions: true } } },
+    include: { _count: { select: { redemptions: true } }, influencer: true },
   });
 
   await writeAudit(prisma, {
@@ -211,7 +238,7 @@ export async function createCoupon(userId: string, requestId: string | undefined
     entityId: created.id,
     requestId,
     permission: MANAGE_PERMISSION,
-    nextState: { code, percent: input.percent, maxDiscount: input.maxDiscount, isActive: input.isActive },
+    nextState: { code, percent: input.percent, maxDiscount: input.maxDiscount, isActive: input.isActive, showInCheckoutOffers: publicOfferVisibility(input.showInCheckoutOffers), influencerId: attribution.influencerId, commissionRate: input.commissionRate ?? null },
   });
 
   return shape(created);
@@ -225,6 +252,7 @@ export async function updateCoupon(
 ) {
   await adminAccess(userId, MANAGE_PERMISSION);
   const { code, startsAt, expiresAt } = assertCouponValid(input);
+  const attribution = await influencerCouponData(input);
 
   const current = await prisma.coupon.findUnique({ where: { id } });
   if (!current) throw new ApiError(404, 'Coupon was not found.', 'COUPON_NOT_FOUND');
@@ -257,8 +285,10 @@ export async function updateCoupon(
       usageLimit: input.usageLimit,
       perUserLimit: input.perUserLimit,
       isActive: input.isActive,
+      showInCheckoutOffers: publicOfferVisibility(input.showInCheckoutOffers),
+      ...attribution,
     },
-    include: { _count: { select: { redemptions: true } } },
+    include: { _count: { select: { redemptions: true } }, influencer: true },
   });
 
   await writeAudit(prisma, {
@@ -273,12 +303,18 @@ export async function updateCoupon(
       percent: toPercent(current.percent),
       maxDiscount: current.maxDiscount.toString(),
       isActive: current.isActive,
+      showInCheckoutOffers: current.showInCheckoutOffers,
+      influencerId: current.influencerId,
+      commissionRate: current.commissionRate?.toString() ?? null,
     },
     nextState: {
       code,
       percent: input.percent,
       maxDiscount: input.maxDiscount,
       isActive: input.isActive,
+      showInCheckoutOffers: publicOfferVisibility(input.showInCheckoutOffers),
+      influencerId: attribution.influencerId,
+      commissionRate: input.commissionRate ?? null,
     },
   });
 

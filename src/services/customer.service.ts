@@ -1,31 +1,46 @@
 import { CartAbandonmentStatus, Prisma, VerificationStatus } from '../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 import { ApiError } from '../utils/api-error.js';
+import { addressDeletionPlan } from './customer-rules.js';
 
 const safeUser = { id: true, name: true, email: true, mobile: true, role: true, createdAt: true } as const;
 const cartInclude = { items: { include: { variant: { include: { product: { include: { variants: { where: { isActive: true } }, vendor: { select: { businessName: true, verificationStatus: true } }, category: true, media: { orderBy: [{ isCover: 'desc' }, { sortOrder: 'asc' }], select: { id: true, url: true, altText: true, isCover: true, sortOrder: true, width: true, height: true } } } } } } } } } satisfies Prisma.CartInclude;
 
 export const getProfile = (userId: string) => prisma.user.findUniqueOrThrow({ where: { id: userId }, select: safeUser });
 export async function updateProfile(userId: string, data: { name: string; email: string; mobile: string }) { return prisma.user.update({ where: { id: userId }, data, select: safeUser }); }
-export const listAddresses = (userId: string) => prisma.address.findMany({ where: { userId }, orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }] });
+export const listAddresses = (userId: string) => prisma.address.findMany({ where: { userId, isArchived: false }, orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }] });
 export async function saveAddress(userId: string, id: string | undefined, data: Prisma.AddressUncheckedCreateWithoutUserInput) {
   return prisma.$transaction(async (tx) => {
-    if (id && !(await tx.address.findFirst({ where: { id, userId } }))) throw new ApiError(404, 'Address was not found.', 'ADDRESS_NOT_FOUND');
-    const count = await tx.address.count({ where: { userId } });
+    const pin = await tx.deliveryPincode.findUnique({ where: { postalCode: data.postalCode } });
+    const deliverySettings = await tx.deliverySettings.findUnique({ where: { id: 'default' } });
+    if (deliverySettings?.isPinPricingEnabled && (!pin || !pin.isServiceable))
+      throw new ApiError(422, 'Delivery is not available to this PIN code.', 'DELIVERY_PIN_UNSERVICEABLE');
+    const addressData = pin
+      ? { ...data, state: pin.state, district: pin.district }
+      : data;
+    if (id && !(await tx.address.findFirst({ where: { id, userId, isArchived: false } }))) throw new ApiError(404, 'Address was not found.', 'ADDRESS_NOT_FOUND');
+    const count = await tx.address.count({ where: { userId, isArchived: false } });
     const makeDefault = data.isDefault || count === 0;
-    if (makeDefault) await tx.address.updateMany({ where: { userId }, data: { isDefault: false } });
-    return id ? tx.address.update({ where: { id }, data: { ...data, isDefault: makeDefault } }) : tx.address.create({ data: { ...data, userId, isDefault: makeDefault } });
+    if (makeDefault) await tx.address.updateMany({ where: { userId, isArchived: false }, data: { isDefault: false } });
+    return id ? tx.address.update({ where: { id }, data: { ...addressData, isDefault: makeDefault } }) : tx.address.create({ data: { ...addressData, userId, isDefault: makeDefault } });
   });
 }
 export async function deleteAddress(userId: string, id: string) {
   return prisma.$transaction(async (tx) => {
-    const address = await tx.address.findFirst({ where: { id, userId } });
+    const address = await tx.address.findFirst({ where: { id, userId, isArchived: false } });
     if (!address) throw new ApiError(404, 'Address was not found.', 'ADDRESS_NOT_FOUND');
-    await tx.address.delete({ where: { id } });
-    if (address.isDefault) { const next = await tx.address.findFirst({ where: { userId }, orderBy: { createdAt: 'asc' } }); if (next) await tx.address.update({ where: { id: next.id }, data: { isDefault: true } }); }
+    const referencedByOrder = await tx.order.count({ where: { deliveryAddressId: id } });
+    const hasOtherActiveAddress = await tx.address.count({ where: { userId, isArchived: false, id: { not: id } } }) > 0;
+    const plan = addressDeletionPlan({ referencedByOrder: referencedByOrder > 0, isDefault: address.isDefault, hasOtherActiveAddress });
+    if (plan.archive) await tx.address.update({ where: { id }, data: { isArchived: true, isDefault: false } });
+    else await tx.address.delete({ where: { id } });
+    if (plan.promoteNextDefault) {
+      const next = await tx.address.findFirst({ where: { userId, isArchived: false }, orderBy: { createdAt: 'asc' } });
+      if (next) await tx.address.update({ where: { id: next.id }, data: { isDefault: true } });
+    }
   });
 }
-export async function setDefaultAddress(userId: string, id: string) { return prisma.$transaction(async (tx) => { if (!(await tx.address.findFirst({ where: { id, userId } }))) throw new ApiError(404, 'Address was not found.', 'ADDRESS_NOT_FOUND'); await tx.address.updateMany({ where: { userId }, data: { isDefault: false } }); return tx.address.update({ where: { id }, data: { isDefault: true } }); }); }
+export async function setDefaultAddress(userId: string, id: string) { return prisma.$transaction(async (tx) => { if (!(await tx.address.findFirst({ where: { id, userId, isArchived: false } }))) throw new ApiError(404, 'Address was not found.', 'ADDRESS_NOT_FOUND'); await tx.address.updateMany({ where: { userId, isArchived: false }, data: { isDefault: false } }); return tx.address.update({ where: { id }, data: { isDefault: true } }); }); }
 
 async function activeCart(userId: string) { const existing = await prisma.cart.findFirst({ where: { customerId: userId, order: null }, include: cartInclude }); return existing ?? prisma.cart.create({ data: { customerId: userId }, include: cartInclude }); }
 export const getCart = activeCart;
