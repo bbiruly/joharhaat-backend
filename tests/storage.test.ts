@@ -7,6 +7,12 @@ describe('S3 object storage policy', () => {
     expect(() => validateUpload({ mimeType: 'video/mp4', size: 99_000_000, category: 'homepage' })).not.toThrow();
     expect(objectKeyFor('homepage', 'brand-film.mp4')).toMatch(/^public\/homepage\/[a-f0-9-]+\.mp4$/);
   });
+  it('accepts image and video endorsement media with separate size limits', () => {
+    expect(() => validateUpload({ mimeType: 'image/webp', size: 4_900_000, category: 'endorsement' })).not.toThrow();
+    expect(() => validateUpload({ mimeType: 'video/webm', size: 99_000_000, category: 'endorsement' })).not.toThrow();
+    expect(objectKeyFor('endorsement', 'portrait.webp')).toMatch(/^public\/endorsement\/[a-f0-9-]+\.webp$/);
+    expect(() => validateUpload({ mimeType: 'image/png', size: 5_000_001, category: 'endorsement' })).toThrow('allowed format');
+  });
   it('rejects unsupported, oversized homepage video and video uploads in other categories', () => {
     for (const input of [
       { mimeType: 'video/quicktime', size: 10, category: 'homepage' as const },

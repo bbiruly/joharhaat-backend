@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { FulfillmentStatus, JharkhandDistrict, ModerationStatus, PayoutRequestStatus, Prisma, ProductLifecycleStatus, VerificationStatus } from '../generated/prisma/client.js';
+import { FulfillmentStatus, JharkhandDistrict, ModerationStatus, PayoutRequestStatus, Prisma, ProductLifecycleStatus, ReservationStatus, VerificationStatus } from '../generated/prisma/client.js';
 import { env } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
+import { recalculateOrderCommissions } from './influencer-commission.service.js';
 import { ApiError } from '../utils/api-error.js';
 import { money } from '../utils/money.js';
 import { objectStorage, publicMediaUrl } from './storage.service.js';
@@ -12,12 +13,29 @@ export async function dashboard(userId: string) {
   const [profile, products, orders, ledgers, payoutRequests, notifications] = await Promise.all([
     prisma.vendor.findUniqueOrThrow({ where: { id: vendor.id }, include: { owner: { select: { name: true, mobile: true } } } }),
     prisma.product.findMany({ where: { vendorId: vendor.id }, include: { variants: true, category: true, media: { orderBy: { sortOrder: 'asc' } } }, orderBy: { createdAt: 'desc' } }),
-    prisma.vendorOrder.findMany({ where: { vendorId: vendor.id }, include: { items: true, statusLogs: { orderBy: { createdAt: 'asc' } }, order: { select: { district: true, postalCode: true, recipientName: true } } }, orderBy: { createdAt: 'desc' } }),
-    prisma.walletLedger.findMany({ where: { vendorId: vendor.id }, include: { vendorOrder: { select: { gmv: true, adminCommission: true, netVendorPayout: true } } }, orderBy: { createdAt: 'desc' } }),
+    prisma.vendorOrder.findMany({ where: { vendorId: vendor.id }, include: { items: true, statusLogs: { orderBy: { createdAt: 'asc' } }, order: { select: { orderNumber: true, district: true, recipientState: true, postalCode: true, recipientName: true, recipientMobile: true, addressLine1: true, addressLine2: true, paymentStatus: true } } }, orderBy: { createdAt: 'desc' } }),
+    prisma.walletLedger.findMany({ where: { vendorId: vendor.id }, include: { vendorOrder: { select: { id: true, gmv: true, adminCommission: true, netVendorPayout: true } }, payoutRequest: { select: { id: true, reference: true } } }, orderBy: { createdAt: 'desc' } }),
     prisma.payoutRequest.findMany({ where: { vendorId: vendor.id }, orderBy: { requestedAt: 'desc' } }),
     prisma.notificationOutbox.findMany({ where: { vendorId: vendor.id }, orderBy: { createdAt: 'desc' }, take: 20 }),
   ]);
-  return { vendor: profile, products, orders, ledgers, payoutRequests, notifications };
+  const [reserved, approvedApplication] = await Promise.all([
+    prisma.payoutRequest.aggregate({ where: { vendorId: vendor.id, status: { in: [PayoutRequestStatus.PENDING, PayoutRequestStatus.PROCESSING] } }, _sum: { amount: true } }),
+    prisma.vendorApplication.findFirst({ where: { ownerUserId: userId, status: ModerationStatus.APPROVED }, select: { accountHolderName: true, bankLastFour: true, ifsc: true } }),
+  ]);
+  const walletBalance = profile.walletBalance;
+  const reservedAmount = reserved._sum.amount ?? new Prisma.Decimal(0);
+  const availableAmount = Prisma.Decimal.max(walletBalance.minus(reservedAmount), 0);
+  const ledgerSummary = {
+    credited: ledgers.filter((entry) => entry.direction === 'CREDIT').reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)),
+    debited: ledgers.filter((entry) => entry.direction === 'DEBIT').reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)),
+    escrowReleased: ledgers.filter((entry) => entry.type === 'ESCROW_RELEASE').reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)),
+    transferred: ledgers.filter((entry) => entry.type === 'BANK_TRANSFER').reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)),
+  };
+  return {
+    vendor: { ...profile, payoutDestination: approvedApplication ? { accountHolderName: approvedApplication.accountHolderName, bankLastFour: approvedApplication.bankLastFour, ifsc: approvedApplication.ifsc } : null },
+    products, orders, ledgers, payoutRequests, notifications,
+    wallet: { walletBalance, reservedAmount, availableAmount, ...ledgerSummary },
+  };
 }
 
 export interface ProductInput {
@@ -27,6 +45,25 @@ export interface ProductInput {
   submitForReview?: boolean;
   variants: { sku: string; label: string; price: number; stock: number }[];
   media?: { objectKey: string; url: string; mimeType: string; altText: string; sortOrder: number; isCover: boolean; width?: number; height?: number }[];
+}
+
+type ProductUpdateInput = Omit<ProductInput, 'variants' | 'media'> & {
+  variants: (ProductInput['variants'][number] & { id?: string })[];
+  media?: (NonNullable<ProductInput['media']>[number] & { id?: string })[];
+};
+
+export function productEditReviewState(status: ProductLifecycleStatus) {
+  if (status === ProductLifecycleStatus.ARCHIVED || status === ProductLifecycleStatus.SUSPENDED)
+    throw new ApiError(409, 'Archived or suspended products cannot be edited.', 'PRODUCT_NOT_EDITABLE');
+  return {
+    lifecycleStatus: ProductLifecycleStatus.PENDING_REVIEW,
+    isPublished: false,
+  };
+}
+
+export function assertVariantCanBeRemoved(references: { orderItems: number; cartItems: number; reservations: number }, sku: string) {
+  if (references.orderItems || references.cartItems || references.reservations)
+    throw new ApiError(409, `${sku} is in use and cannot be removed.`, 'VARIANT_IN_USE');
 }
 
 export interface ProductDraftPayload {
@@ -248,6 +285,118 @@ export async function createProduct(userId: string, input: ProductInput) {
   return prisma.product.create({ data: { vendorId: vendor.id, categoryId: input.categoryId, name: input.name, slug: input.slug, description: input.description, artisanStory: input.artisanStory ?? null, district: placement.district, weeklyHaatId: placement.weeklyHaatId, weeklyHaatDay: placement.weeklyHaatDay, minPrice, isPublished: false, lifecycleStatus, submittedAt: input.submitForReview ? new Date() : null, materials: input.materials ?? null, dimensions: input.dimensions ?? null, careInstructions: input.careInstructions ?? null, dispatchEstimate: input.dispatchEstimate ?? null, returnPolicy: input.returnPolicy ?? null, variants: { create: input.variants.map((item) => ({ ...item, sku: item.sku.toUpperCase(), lowStock: item.stock < env.LOW_STOCK_THRESHOLD })) }, ...(media?.length ? { media: { create: media } } : {}) }, include: productInclude });
 }
 
+export async function updateProduct(userId: string, id: string, input: ProductUpdateInput) {
+  const vendor = await vendorFor(userId);
+  const current = await prisma.product.findFirst({
+    where: { id, vendorId: vendor.id },
+    include: productInclude,
+  });
+  if (!current) throw new ApiError(404, 'Product was not found.', 'PRODUCT_NOT_FOUND');
+  const reviewState = productEditReviewState(current.lifecycleStatus);
+  if (!input.variants.length) throw new ApiError(422, 'At least one variant is required.', 'VARIANT_REQUIRED');
+  const mediaInput = input.media ?? [];
+  if (!mediaInput.length) throw new ApiError(422, 'At least one product photo is required.', 'PRODUCT_INCOMPLETE');
+  const skus = input.variants.map((item) => item.sku.trim().toUpperCase());
+  if (new Set(skus).size !== skus.length) throw new ApiError(422, 'Every variant SKU must be unique.', 'DUPLICATE_SKU');
+
+  const duplicate = await prisma.product.findFirst({
+    where: { vendorId: vendor.id, id: { not: id }, name: { equals: input.name, mode: 'insensitive' }, lifecycleStatus: { not: ProductLifecycleStatus.ARCHIVED } },
+    select: { id: true },
+  });
+  if (duplicate) throw new ApiError(409, 'A product with this name already exists.', 'DUPLICATE_PRODUCT');
+  const placement = await resolveProductPlacement(input);
+  for (const media of mediaInput) await objectStorage.confirmUpload(media.objectKey, userId);
+
+  const existingVariants = new Map(current.variants.map((variant) => [variant.id, variant]));
+  const existingMedia = new Map(current.media.map((media) => [media.id, media]));
+  const submittedVariantIds = new Set<string>();
+  for (const variant of input.variants) {
+    const existing = variant.id
+      ? existingVariants.get(variant.id)
+      : current.variants.find((item) => item.sku === variant.sku.trim().toUpperCase());
+    if (variant.id && !existing) throw new ApiError(404, 'Variant was not found for this product.', 'VARIANT_NOT_FOUND');
+    if (existing) submittedVariantIds.add(existing.id);
+  }
+  const submittedMediaIds = new Set<string>();
+  for (const media of mediaInput) {
+    if (media.id && !existingMedia.has(media.id)) throw new ApiError(404, 'Photo was not found for this product.', 'PRODUCT_MEDIA_NOT_FOUND');
+    if (media.id) submittedMediaIds.add(media.id);
+  }
+
+  const now = new Date();
+  return prisma.$transaction(async (tx) => {
+    for (const variant of current.variants.filter((item) => !submittedVariantIds.has(item.id))) {
+      const [orderItems, cartItems, reservations] = await Promise.all([
+        tx.orderItem.count({ where: { variantId: variant.id } }),
+        tx.cartItem.count({ where: { variantId: variant.id } }),
+        tx.inventoryReservation.count({ where: { variantId: variant.id, status: ReservationStatus.ACTIVE } }),
+      ]);
+      assertVariantCanBeRemoved({ orderItems, cartItems, reservations }, variant.sku);
+      await tx.productVariant.delete({ where: { id: variant.id } });
+    }
+
+    for (const variant of input.variants) {
+      const existing = variant.id ? existingVariants.get(variant.id) : current.variants.find((item) => item.sku === variant.sku);
+      const data = {
+        sku: variant.sku.trim().toUpperCase(),
+        label: variant.label.trim(),
+        price: new Prisma.Decimal(variant.price),
+        stock: variant.stock,
+        lowStock: variant.stock < env.LOW_STOCK_THRESHOLD,
+        isActive: true,
+        version: { increment: 1 },
+      };
+      if (existing) {
+        submittedVariantIds.add(existing.id);
+        await tx.productVariant.update({ where: { id: existing.id }, data });
+      } else {
+        await tx.productVariant.create({ data: { ...data, productId: id, version: 0 } });
+      }
+    }
+
+    await tx.productMedia.deleteMany({ where: { productId: id, id: { notIn: [...submittedMediaIds] } } });
+    for (const media of mediaInput) {
+      const data = {
+        objectKey: media.objectKey,
+        url: publicMediaUrl(media.objectKey),
+        mimeType: media.mimeType,
+        altText: media.altText.trim(),
+        sortOrder: media.sortOrder,
+        isCover: media.isCover,
+        width: media.width ?? null,
+        height: media.height ?? null,
+      };
+      if (media.id) await tx.productMedia.update({ where: { id: media.id }, data });
+      else await tx.productMedia.create({ data: { ...data, productId: id } });
+    }
+
+    return tx.product.update({
+      where: { id },
+      data: {
+        name: input.name.trim(),
+        description: input.description.trim(),
+        artisanStory: input.artisanStory?.trim() || null,
+        categoryId: input.categoryId,
+        district: placement.district,
+        weeklyHaatId: placement.weeklyHaatId,
+        weeklyHaatDay: placement.weeklyHaatDay,
+        materials: input.materials?.trim() || null,
+        dimensions: input.dimensions?.trim() || null,
+        careInstructions: input.careInstructions?.trim() || null,
+        dispatchEstimate: input.dispatchEstimate?.trim() || null,
+        returnPolicy: input.returnPolicy?.trim() || null,
+        minPrice: Math.min(...input.variants.map((item) => item.price)),
+        ...reviewState,
+        submittedAt: now,
+        reviewedAt: null,
+        reviewerId: null,
+        moderationReason: null,
+      },
+      include: productInclude,
+    });
+  });
+}
+
 export async function submitProduct(userId: string, id: string) {
   const product = await productDetail(userId, id);
   if (product.lifecycleStatus !== ProductLifecycleStatus.DRAFT && product.lifecycleStatus !== ProductLifecycleStatus.REJECTED) throw new ApiError(409, 'Only draft or rejected products can be submitted.', 'PRODUCT_NOT_SUBMITTABLE');
@@ -269,9 +418,39 @@ export async function updateStock(userId: string, variantId: string, stock: numb
   return prisma.productVariant.update({ where: { id: variantId }, data: { stock, lowStock: stock < env.LOW_STOCK_THRESHOLD, version: { increment: 1 } } });
 }
 const transitions: Record<FulfillmentStatus, FulfillmentStatus[]> = { PENDING: [FulfillmentStatus.PACKED, FulfillmentStatus.CANCELLED], PACKED: [FulfillmentStatus.SHIPPED, FulfillmentStatus.CANCELLED], SHIPPED: [FulfillmentStatus.DELIVERED, FulfillmentStatus.RTO], DELIVERED: [], RTO: [], CANCELLED: [] };
-export async function transitionOrder(userId: string, id: string, status: FulfillmentStatus) { const vendor = await vendorFor(userId); const order = await prisma.vendorOrder.findFirst({ where: { id, vendorId: vendor.id } }); if (!order) throw new ApiError(404, 'Vendor order was not found.', 'VENDOR_ORDER_NOT_FOUND'); if (!transitions[order.status].includes(status)) throw new ApiError(409, `Cannot move order from ${order.status} to ${status}.`, 'INVALID_ORDER_TRANSITION'); return prisma.vendorOrder.update({ where: { id }, data: { status, ...(status === FulfillmentStatus.DELIVERED ? { deliveredAt: new Date() } : {}), statusLogs: { create: { status, actorUserId: userId, note: 'Updated by vendor.' } } }, include: { items: true, statusLogs: true } }); }
-export async function shippingLabel(userId: string, id: string) { const vendor = await vendorFor(userId); const order = await prisma.vendorOrder.findFirst({ where: { id, vendorId: vendor.id }, include: { items: true, order: true } }); if (!order) throw new ApiError(404, 'Vendor order was not found.', 'VENDOR_ORDER_NOT_FOUND'); return { trackingId: order.trackingId, vendor: vendor.businessName, recipientName: order.order.recipientName, recipientMobile: order.order.recipientMobile, addressLine1: order.order.addressLine1, district: order.order.district, postalCode: order.order.postalCode, items: order.items }; }
-export async function requestPayout(userId: string) { const vendor = await vendorFor(userId); const pending = await prisma.payoutRequest.findFirst({ where: { vendorId: vendor.id, status: { in: [PayoutRequestStatus.PENDING, PayoutRequestStatus.PROCESSING] } } }); if (pending) return pending; if (vendor.walletBalance.lessThanOrEqualTo(0)) throw new ApiError(422, 'No available wallet balance.', 'NO_PAYOUT_BALANCE'); return prisma.payoutRequest.create({ data: { vendorId: vendor.id, amount: money(vendor.walletBalance), reference: `PAY-${randomUUID()}` } }); }
+export function assertVendorOrderTransition(input: { current: FulfillmentStatus; next: FulfillmentStatus; paymentStatus: string; carrierName?: string; carrierTrackingId?: string }) {
+  if (!transitions[input.current].includes(input.next)) throw new ApiError(409, `Cannot move order from ${input.current} to ${input.next}.`, 'INVALID_ORDER_TRANSITION');
+  if (input.next === FulfillmentStatus.PACKED && !['PAID', 'AUTHORIZED'].includes(input.paymentStatus)) throw new ApiError(409, 'A paid order is required before packing.', 'ORDER_PAYMENT_REQUIRED');
+  if (input.next === FulfillmentStatus.SHIPPED && (!input.carrierName?.trim() || !input.carrierTrackingId?.trim())) throw new ApiError(422, 'Enter the carrier and tracking reference before marking an order shipped.', 'SHIPMENT_DETAILS_REQUIRED');
+}
+export async function transitionOrder(userId: string, id: string, status: FulfillmentStatus, shipment: { carrierName?: string; carrierTrackingId?: string } = {}) {
+  const vendor = await vendorFor(userId);
+  return prisma.$transaction(async tx => {
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM vendor_orders WHERE id = ${id} AND vendor_id = ${vendor.id} FOR UPDATE`);
+    const order = await tx.vendorOrder.findFirst({ where: { id, vendorId: vendor.id }, include: { order: { select: { paymentStatus: true } } } });
+    if (!order) throw new ApiError(404, 'Vendor order was not found.', 'VENDOR_ORDER_NOT_FOUND');
+    assertVendorOrderTransition({ current: order.status, next: status, paymentStatus: order.order.paymentStatus, ...shipment });
+    const updated = await tx.vendorOrder.update({ where: { id }, data: { status, ...(status === FulfillmentStatus.DELIVERED ? { deliveredAt: new Date() } : {}), ...(status === FulfillmentStatus.SHIPPED ? { carrierName: shipment.carrierName!.trim(), carrierTrackingId: shipment.carrierTrackingId!.trim() } : {}), statusLogs: { create: { status, actorUserId: userId, note: status === FulfillmentStatus.SHIPPED ? `Carrier: ${shipment.carrierName!.trim()}; tracking: ${shipment.carrierTrackingId!.trim()}` : 'Updated by vendor.' } } }, include: { items: true, statusLogs: true } });
+    await recalculateOrderCommissions(tx, order.orderId);
+    return updated;
+  });
+}
+export async function shippingLabel(userId: string, id: string) { const vendor = await vendorFor(userId); const order = await prisma.vendorOrder.findFirst({ where: { id, vendorId: vendor.id }, include: { items: true, order: true } }); if (!order) throw new ApiError(404, 'Vendor order was not found.', 'VENDOR_ORDER_NOT_FOUND'); return { trackingId: order.trackingId, carrierName: order.carrierName, carrierTrackingId: order.carrierTrackingId, vendor: vendor.businessName, recipientName: order.order.recipientName, recipientMobile: order.order.recipientMobile, addressLine1: order.order.addressLine1, addressLine2: order.order.addressLine2, district: order.order.district, state: order.order.recipientState, postalCode: order.order.postalCode, items: order.items }; }
+export async function requestPayout(userId: string) {
+  const vendor = await vendorFor(userId);
+  const approvedDestination = await prisma.vendorApplication.findFirst({ where: { ownerUserId: userId, status: ModerationStatus.APPROVED }, select: { id: true } });
+  if (!approvedDestination) throw new ApiError(422, 'An approved payout destination is required.', 'PAYOUT_DESTINATION_REQUIRED');
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM vendors WHERE id = ${vendor.id} FOR UPDATE`);
+    const existing = await tx.payoutRequest.findFirst({ where: { vendorId: vendor.id, status: { in: [PayoutRequestStatus.PENDING, PayoutRequestStatus.PROCESSING] } }, orderBy: { requestedAt: 'desc' } });
+    if (existing) return existing;
+    const reserved = await tx.payoutRequest.aggregate({ where: { vendorId: vendor.id, status: { in: [PayoutRequestStatus.PENDING, PayoutRequestStatus.PROCESSING] } }, _sum: { amount: true } });
+    const balance = (await tx.vendor.findUniqueOrThrow({ where: { id: vendor.id } })).walletBalance;
+    const available = money(balance.minus(reserved._sum.amount ?? new Prisma.Decimal(0)));
+    if (available.lessThanOrEqualTo(0)) throw new ApiError(422, 'No available wallet balance.', 'NO_PAYOUT_BALANCE');
+    return tx.payoutRequest.create({ data: { vendorId: vendor.id, amount: available, reference: `PAY-${randomUUID()}` } });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+}
 export async function submitApplication(userId: string, input: any) {
   const existing = await prisma.vendorApplication.findUnique({ where: { idempotencyKey: input.idempotencyKey }, include: { documents: true } });
   if (existing) {

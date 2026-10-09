@@ -4,7 +4,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env, integrations } from '../config/env.js';
 import { ApiError } from '../utils/api-error.js';
 
-export type UploadCategory = 'product' | 'msme' | 'review' | 'homepage';
+export type UploadCategory = 'product' | 'msme' | 'review' | 'homepage' | 'endorsement';
 
 export interface UploadInput { fileName: string; mimeType: string; size: number; category: UploadCategory; ownerId?: string }
 export interface ObjectStorageService {
@@ -12,7 +12,7 @@ export interface ObjectStorageService {
   confirmUpload(objectKey: string, ownerId: string): Promise<{ objectKey: string; confirmed: true; publicUrl: string | null }>;
 }
 /** A review photo comes off a phone camera; 5 MB is generous for one. */
-const MAX_BYTES: Record<UploadCategory, number> = { msme: 5_000_000, review: 5_000_000, product: 10_000_000, homepage: 100_000_000 };
+const MAX_BYTES: Record<UploadCategory, number> = { msme: 5_000_000, review: 5_000_000, product: 10_000_000, homepage: 100_000_000, endorsement: 100_000_000 };
 export function credentialsFromEnvironment(input: { AWS_ACCESS_KEY_ID?: string | undefined; AWS_SECRET_ACCESS_KEY?: string | undefined }) {
   if (!input.AWS_ACCESS_KEY_ID || !input.AWS_SECRET_ACCESS_KEY) return undefined;
   return {
@@ -31,19 +31,23 @@ export function cloudFrontBaseUrl(domain: string) {
   return `https://${domain.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '')}`;
 }
 export function validateUpload(input: Pick<UploadInput, 'category' | 'mimeType' | 'size'>) {
+  const endorsementVideo = input.category === 'endorsement' && ['video/mp4', 'video/webm'].includes(input.mimeType);
+  const maxBytes = input.category === 'endorsement' && !endorsementVideo ? 5_000_000 : MAX_BYTES[input.category];
   const permitted = input.category === 'homepage'
     ? input.mimeType === 'video/mp4' || input.mimeType === 'video/webm'
-    : input.category === 'msme'
-      ? ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(input.mimeType)
-      : ['image/jpeg', 'image/png', 'image/webp'].includes(input.mimeType);
-  if (!permitted || input.size <= 0 || input.size > MAX_BYTES[input.category]) throw new ApiError(422, `Upload must be an allowed format and at most ${MAX_BYTES[input.category] / 1_000_000} MB.`, 'INVALID_UPLOAD');
+    : input.category === 'endorsement'
+      ? ['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm'].includes(input.mimeType)
+      : input.category === 'msme'
+        ? ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(input.mimeType)
+        : ['image/jpeg', 'image/png', 'image/webp'].includes(input.mimeType);
+  if (!permitted || input.size <= 0 || input.size > maxBytes) throw new ApiError(422, `Upload must be an allowed format and at most ${maxBytes / 1_000_000} MB.`, 'INVALID_UPLOAD');
 }
 export function objectKeyFor(category: UploadCategory, fileName: string) {
   const suffix = fileName.toLowerCase().match(/\.(jpe?g|png|webp|pdf|mp4|webm)$/)?.[0] ?? '';
   return `${category === 'msme' ? 'private' : 'public'}/${category}/${randomUUID()}${suffix}`;
 }
 function parseKey(objectKey: string) {
-  const match = /^(public\/(product|review|homepage)|private\/(msme))\/[a-f0-9-]+\.(jpg|jpeg|png|webp|pdf|mp4|webm)$/i.exec(objectKey);
+  const match = /^(public\/(product|review|homepage|endorsement)|private\/(msme))\/[a-f0-9-]+\.(jpg|jpeg|png|webp|pdf|mp4|webm)$/i.exec(objectKey);
   if (!match) throw new ApiError(422, 'Object key is invalid.', 'INVALID_OBJECT_KEY');
   return (match[2] ?? match[3]) as UploadCategory;
 }

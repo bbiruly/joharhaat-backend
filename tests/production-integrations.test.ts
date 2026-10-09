@@ -45,6 +45,8 @@ describe('Razorpay primitives', () => {
     const signature = createPaymentSignature('order_1', 'pay_1', 'secret');
     expect(verifyPaymentSignature('order_1', 'pay_1', signature, 'secret')).toBe(true);
     expect(verifyPaymentSignature('order_1', 'pay_2', signature, 'secret')).toBe(false);
+    expect(verifyPaymentSignature('order_2', 'pay_1', signature, 'secret')).toBe(false);
+    expect(verifyPaymentSignature('order_1', 'pay_1', `${signature}00`, 'secret')).toBe(false);
   });
 });
 

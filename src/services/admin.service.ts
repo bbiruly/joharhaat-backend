@@ -9,11 +9,12 @@ import { logger } from '../utils/logger.js';
 import { pagination } from '../utils/pagination.js';
 import { logAudit, writeAudit } from '../utils/audit-log.js';
 import { cartAbandonmentRate, consignmentTotals, haatPerformance, monthlySeries, orderTotals } from './admin-analytics.service.js';
+import { recalculateOrderCommissions } from './influencer-commission.service.js';
 
-export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'team:manage';
+export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'shipping:manage'|'team:manage';
 
 /** Every permission the system understands. The Settings matrix offers these. */
-export const ALL_PERMISSIONS: AdminPermission[] = ['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','team:manage'];
+export const ALL_PERMISSIONS: AdminPermission[] = ['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','shipping:manage','team:manage'];
 
 /**
  * Fallback matrix. A role with no rows in `role_permissions` uses these, so an
@@ -21,7 +22,7 @@ export const ALL_PERMISSIONS: AdminPermission[] = ['analytics:read','analytics:e
  */
 const DEFAULT_ROLE_PERMISSIONS: Record<AdminTeamRole, AdminPermission[]> = {
   SUPER_ADMIN: [...ALL_PERMISSIONS],
-  OPERATIONS: ['analytics:read','orders:manage','haats:manage'], FINANCE: ['analytics:read','analytics:export','payouts:manage'], MARKETING: ['analytics:read','marketing:manage'], MODERATOR: ['moderation:manage'],
+  OPERATIONS: ['analytics:read','orders:manage','haats:manage','shipping:manage'], FINANCE: ['analytics:read','analytics:export','payouts:manage'], MARKETING: ['analytics:read','marketing:manage'], MODERATOR: ['moderation:manage'],
 };
 
 /**
@@ -241,7 +242,7 @@ export async function correctOrderStatus(userId:string,requestId:string|undefine
     const escrow = await tx.walletLedger.findUnique({ where: { vendorId_vendorOrderId_type: { vendorId: item.vendorId, vendorOrderId: id, type: LedgerType.ESCROW_RELEASE } }, select: { id: true } });
     assertCorrectionAllowed(status, Boolean(escrow));
     const deliveredAt = deliveredAtFor(status, item.deliveredAt);
-    const updated=await tx.vendorOrder.update({where:{id},data:{status,deliveredAt,statusLogs:{create:{status,actorUserId:userId,note:`Admin correction: ${reason}`}}}});await tx.adminActionReason.create({data:{actorId:userId,action:codeOf('ORDER_STATUS_CORRECTION'),entityType:'VendorOrder',entityId:id,reason}});await tx.adminAuditLog.create({data:{actorId:userId,action:codeOf('ORDER_STATUS_CORRECTION'),entityType:'VendorOrder',entityId:id,requestId:requestId??null,permission:'orders:manage',previousState:{status:item.status,deliveredAt:item.deliveredAt},nextState:{status,deliveredAt}}});logAudit({ event: 'ORDER_STATUS_CORRECTION', actorId: userId, entityType: 'VendorOrder', entityId: id, requestId });
+    const updated=await tx.vendorOrder.update({where:{id},data:{status,deliveredAt,statusLogs:{create:{status,actorUserId:userId,note:`Admin correction: ${reason}`}}}});await recalculateOrderCommissions(tx, item.orderId);await tx.adminActionReason.create({data:{actorId:userId,action:codeOf('ORDER_STATUS_CORRECTION'),entityType:'VendorOrder',entityId:id,reason}});await tx.adminAuditLog.create({data:{actorId:userId,action:codeOf('ORDER_STATUS_CORRECTION'),entityType:'VendorOrder',entityId:id,requestId:requestId??null,permission:'orders:manage',previousState:{status:item.status,deliveredAt:item.deliveredAt},nextState:{status,deliveredAt}}});logAudit({ event: 'ORDER_STATUS_CORRECTION', actorId: userId, entityType: 'VendorOrder', entityId: id, requestId });
     return updated;});}
 /**
  * Escrow and payout queues.
@@ -256,9 +257,27 @@ export async function payouts(userId: string, query: { page?: unknown; pageSize?
   await adminAccess(userId, 'payouts:manage');
   const { page, pageSize, skip, take } = pagination(Number(query.page), Number(query.pageSize));
   const [eligible, eligibleTotal, requests, requestsTotal, ledgers, ledgersTotal] = await Promise.all([
-    prisma.vendorOrder.findMany({ where: { status: 'DELIVERED' }, include: { vendor: true, walletLedgers: true }, orderBy: { deliveredAt: 'desc' }, skip, take }),
-    prisma.vendorOrder.count({ where: { status: 'DELIVERED' } }),
-    prisma.payoutRequest.findMany({ include: { vendor: true }, orderBy: { requestedAt: 'desc' }, skip, take }),
+    prisma.vendorOrder.findMany({ where: { status: 'DELIVERED', payoutStatus: { in: ['PENDING', 'ELIGIBLE'] }, order: { paymentStatus: { in: ['PAID', 'AUTHORIZED'] } } }, include: { vendor: true, walletLedgers: true }, orderBy: { deliveredAt: 'desc' }, skip, take }),
+    prisma.vendorOrder.count({ where: { status: 'DELIVERED', payoutStatus: { in: ['PENDING', 'ELIGIBLE'] }, order: { paymentStatus: { in: ['PAID', 'AUTHORIZED'] } } } }),
+    prisma.payoutRequest.findMany({
+      include: {
+        vendor: {
+          include: {
+            owner: {
+              include: {
+                applications: {
+                  where: { status: ModerationStatus.APPROVED },
+                  orderBy: { createdAt: 'desc' },
+                  take: 1,
+                  select: { accountHolderName: true, bankLastFour: true, ifsc: true },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { requestedAt: 'desc' }, skip, take,
+    }),
     prisma.payoutRequest.count(),
     prisma.walletLedger.findMany({ include: { vendor: true, vendorOrder: true }, orderBy: { createdAt: 'desc' }, skip, take }),
     prisma.walletLedger.count(),
@@ -593,6 +612,27 @@ export const productsForModeration = async (userId: string) => (await adminAcces
   include: { vendor: { include: { owner: { select: { name: true, mobile: true } } } }, category: true, variants: true, media: { orderBy: { sortOrder: 'asc' } }, reviewer: { select: { name: true } } },
   orderBy: [{ submittedAt: 'asc' }, { createdAt: 'asc' }],
 }));
+
+export async function taxProducts(userId: string) {
+  await adminAccess(userId, 'moderation:manage');
+  return prisma.product.findMany({
+    select: { id: true, name: true, lifecycleStatus: true, taxHsnCode: true, gstRate: true, category: { select: { name: true } }, vendor: { select: { businessName: true } }, variants: { where: { isActive: true }, select: { price: true, label: true } } },
+    orderBy: [{ lifecycleStatus: 'asc' }, { name: 'asc' }],
+  });
+}
+
+export async function updateProductTax(actorId: string, requestId: string | undefined, id: string, input: { hsnCode: string; gstRate: number }) {
+  await adminAccess(actorId, 'moderation:manage');
+  if (!/^\d{4,8}$/.test(input.hsnCode)) throw new ApiError(422, 'Enter a valid 4 to 8 digit HSN code.', 'INVALID_HSN_CODE');
+  if (!Number.isFinite(input.gstRate) || input.gstRate < 0 || input.gstRate > 100) throw new ApiError(422, 'GST rate must be between 0 and 100 percent.', 'INVALID_GST_RATE');
+  return prisma.$transaction(async (tx) => {
+    const product = await tx.product.findUnique({ where: { id }, select: { id: true, taxHsnCode: true, gstRate: true } });
+    if (!product) throw new ApiError(404, 'Product was not found.', 'PRODUCT_NOT_FOUND');
+    const updated = await tx.product.update({ where: { id }, data: { taxHsnCode: input.hsnCode, gstRate: new Prisma.Decimal(input.gstRate) } });
+    await tx.adminAuditLog.create({ data: { actorId, action: codeOf('PRODUCT_TAX_UPDATED'), entityType: 'Product', entityId: id, requestId: requestId ?? null, permission: 'moderation:manage', previousState: { hsnCode: product.taxHsnCode, gstRate: product.gstRate?.toString() ?? null }, nextState: { hsnCode: input.hsnCode, gstRate: input.gstRate } } });
+    return updated;
+  });
+}
 
 export async function moderateProduct(actorId: string, requestId: string | undefined, id: string, decision: 'APPROVE' | 'REJECT' | 'SUSPEND', reason?: string) {
   await adminAccess(actorId, 'moderation:manage');

@@ -57,7 +57,7 @@ async function main(): Promise<void> {
       });
     }
   }
-  const address = await prisma.address.findFirst({ where: { userId: customer.id, isDefault: true } }) ?? await prisma.address.create({ data: { userId: customer.id, label: 'Home', fullName: customer.name, mobile: customer.mobile, line1: 'Main Road, Torpa', district: JharkhandDistrict.KHUNTI, postalCode: '835227', isDefault: true } });
+  const address = await prisma.address.findFirst({ where: { userId: customer.id, isDefault: true, isArchived: false } }) ?? await prisma.address.create({ data: { userId: customer.id, label: 'Home', fullName: customer.name, mobile: customer.mobile, line1: 'Main Road, Torpa', district: JharkhandDistrict.KHUNTI, state: 'Jharkhand', postalCode: '835227', isDefault: true } });
   const existingCart = await prisma.cart.findFirst({ where: { customerId: customer.id, order: null } });
   const cart = existingCart ?? await prisma.cart.create({ data: { customerId: customer.id } });
   await prisma.coupon.upsert({ where: { code: 'JOHAR10' }, update: {}, create: { code: 'JOHAR10', percent: '0.10', maxDiscount: '250.00', minOrderValue: '300.00', startsAt: new Date('2025-01-01T00:00:00Z'), expiresAt: new Date('2030-12-31T23:59:59Z'), perUserLimit: 1, isActive: true } });

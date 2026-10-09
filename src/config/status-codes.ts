@@ -257,6 +257,12 @@ export const CATALOG_EVENTS = entry({
     hi: 'उत्पाद श्रेणी हटाई गई',
     severity: AdminNotificationSeverity.WARNING,
   },
+  PRODUCT_TAX_UPDATED: {
+    code: 'C012',
+    en: 'Product tax classification updated',
+    hi: 'उत्पाद कर वर्गीकरण बदला गया',
+    category: AdminNotificationCategory.PRODUCT,
+  },
   STOCK_LOW: {
     code: 'C005',
     en: 'Stock below threshold',
@@ -381,6 +387,22 @@ export const ADMIN_EVENTS = entry({
     en: 'Homepage promotional video updated',
     hi: 'होमपेज का प्रचार वीडियो अपडेट किया गया',
   },
+  INFLUENCER_CREATED: { code: 'A020', en: 'Influencer created', hi: 'इन्फ्लुएंसर बनाया गया' },
+  INFLUENCER_UPDATED: { code: 'A021', en: 'Influencer updated', hi: 'इन्फ्लुएंसर अपडेट किया गया' },
+  COMMISSION_REFUND_RECORDED: { code: 'A023', en: 'Influencer commission refund recorded', hi: 'इन्फ्लुएंसर कमीशन रिफंड दर्ज किया गया' },
+  COMMISSION_SETTLED: { code: 'A024', en: 'Influencer commission settled', hi: 'इन्फ्लुएंसर कमीशन का भुगतान दर्ज किया गया' },
+  DELIVERY_SETTINGS_UPDATED: { code: 'A025', en: 'Delivery settings updated', hi: 'डिलीवरी सेटिंग अपडेट की गई' },
+  DELIVERY_PIN_UPDATED: { code: 'A026', en: 'Delivery PIN override updated', hi: 'डिलीवरी PIN दर अपडेट की गई' },
+  DELIVERY_PINCODES_IMPORTED: { code: 'A027', en: 'Delivery PIN coverage imported', hi: 'डिलीवरी PIN कवरेज इम्पोर्ट किया गया' },
+  PAYOUT_REQUEST_PROCESSING: { code: 'A028', en: 'Vendor payout request moved to processing', hi: 'विक्रेता भुगतान अनुरोध प्रक्रिया में भेजा गया' },
+  PAYOUT_REQUEST_COMPLETED: { code: 'A029', en: 'Vendor payout settled', hi: 'विक्रेता भुगतान निपटाया गया' },
+  PAYOUT_REQUEST_REJECTED: { code: 'A030', en: 'Vendor payout request rejected', hi: 'विक्रेता भुगतान अनुरोध अस्वीकार किया गया' },
+  ESCROW_RELEASED: { code: 'A031', en: 'Vendor escrow released', hi: 'विक्रेता एस्क्रो जारी किया गया' },
+  ENDORSEMENT_CREATED: { code: 'A032', en: 'Featured endorsement created', hi: 'विशेष प्रशंसापत्र बनाया गया' },
+  ENDORSEMENT_UPDATED: { code: 'A033', en: 'Featured endorsement updated', hi: 'विशेष प्रशंसापत्र अपडेट किया गया' },
+  ENDORSEMENT_PUBLISHED: { code: 'A034', en: 'Featured endorsement published', hi: 'विशेष प्रशंसापत्र प्रकाशित किया गया' },
+  ENDORSEMENT_UNPUBLISHED: { code: 'A035', en: 'Featured endorsement unpublished', hi: 'विशेष प्रशंसापत्र अप्रकाशित किया गया' },
+  ENDORSEMENT_ARCHIVED: { code: 'A036', en: 'Featured endorsement archived', hi: 'विशेष प्रशंसापत्र संग्रहीत किया गया' },
 });
 
 /* ------------------------------------------------------------------ lookup */

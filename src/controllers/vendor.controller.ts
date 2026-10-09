@@ -11,11 +11,12 @@ export const saveProductDraft: RequestHandler = async (req, res) => res.status(r
 export const discardProductDraft: RequestHandler = async (req, res) => res.json({ data: await vendor.discardProductDraft(req.auth!.userId, String(req.params.id)) });
 export const submitProductDraft: RequestHandler = async (req, res) => res.status(201).json({ data: await vendor.submitProductDraft(req.auth!.userId, String(req.params.id)) });
 export const product: RequestHandler = async (req, res) => res.json({ data: await vendor.productDetail(req.auth!.userId, String(req.params.id)) });
+export const updateProduct: RequestHandler = async (req, res) => res.json({ data: await vendor.updateProduct(req.auth!.userId, String(req.params.id), req.body) });
 export const createProduct: RequestHandler = async (req, res) => res.status(201).json({ data: await vendor.createProduct(req.auth!.userId, req.body) });
 export const submitProduct: RequestHandler = async (req, res) => res.json({ data: await vendor.submitProduct(req.auth!.userId, String(req.params.id)) });
 export const archiveProduct: RequestHandler = async (req, res) => res.json({ data: await vendor.archiveProduct(req.auth!.userId, String(req.params.id)) });
 export const updateStock: RequestHandler = async (req, res) => res.json({ data: await vendor.updateStock(req.auth!.userId, String(req.params.id), req.body.stock, req.body.expectedVersion) });
-export const transitionOrder: RequestHandler = async (req, res) => res.json({ data: await vendor.transitionOrder(req.auth!.userId, String(req.params.id), req.body.status as FulfillmentStatus) });
+export const transitionOrder: RequestHandler = async (req, res) => res.json({ data: await vendor.transitionOrder(req.auth!.userId, String(req.params.id), req.body.status as FulfillmentStatus, { carrierName: req.body.carrierName, carrierTrackingId: req.body.carrierTrackingId }) });
 export const shippingLabel: RequestHandler = async (req, res) => res.json({ data: await vendor.shippingLabel(req.auth!.userId, String(req.params.id)) });
 export const requestPayout: RequestHandler = async (req, res) => res.status(201).json({ data: await vendor.requestPayout(req.auth!.userId) });
 export const submitApplication: RequestHandler = async (req, res) => res.status(201).json({ data: await vendor.submitApplication(req.auth!.userId, req.body) });
