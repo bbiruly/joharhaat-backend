@@ -12,6 +12,7 @@ import * as vendorController from '../controllers/vendor.controller.js';
 import * as adminController from '../controllers/admin.controller.js';
 import * as productAnalyticsController from '../controllers/product-analytics.controller.js';
 import * as advancedAnalyticsController from '../controllers/advanced-analytics.controller.js';
+import * as booksController from '../controllers/books.controller.js';
 import { payoutController } from '../controllers/payout.controller.js';
 import { productSearchController } from '../controllers/product.controller.js';
 import { JharkhandDistrict, UserRole, WeeklyHaatDay } from '../generated/prisma/client.js';
@@ -28,6 +29,7 @@ import { addressSchema, cartItemSchema, idParams, profileSchema, quantitySchema 
 import { asyncHandler } from '../utils/async-handler.js';
 import { resendWebhook } from '../controllers/webhook.controller.js';
 import * as deliveryController from '../controllers/delivery.controller.js';
+import { BooksAccountType, BooksPartyType, BooksSalesChannel, StockItemType, StockMovementType } from '../generated/prisma/client.js';
 
 export const apiRouter: ExpressRouter = Router();
 const deliveryCsvText = text({ type: ['text/csv', 'text/plain'], limit: '25mb' });
@@ -199,6 +201,19 @@ apiRouter.get('/vendor/orders/:id/shipping-label', authenticate, authorize(UserR
 apiRouter.post('/vendor/payout-requests', authenticate, authorize(UserRole.VENDOR), asyncHandler(vendorController.requestPayout));
 
 apiRouter.get('/admin/analytics', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.analytics));
+const booksMoney = z.string().regex(/^\d+(?:\.\d{1,2})?$/);
+apiRouter.get('/admin/books', authenticate, authorize(UserRole.ADMIN), asyncHandler(booksController.overview));
+apiRouter.post('/admin/books/setup', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ startDate: z.string() }) })), asyncHandler(booksController.setup));
+apiRouter.get('/admin/books/accounts', authenticate, authorize(UserRole.ADMIN), asyncHandler(booksController.accounts));
+apiRouter.post('/admin/books/accounts', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ code: z.string().trim().min(2).max(20), name: z.string().trim().min(2).max(120), type: z.enum(BooksAccountType), isCashAccount: z.boolean().optional(), isCostOfGoodsSold: z.boolean().optional() }) })), asyncHandler(booksController.createAccount));
+apiRouter.post('/admin/books/parties', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ type: z.enum(BooksPartyType), name: z.string().trim().min(2).max(160), email: z.email().optional(), phone: z.string().max(30).optional(), taxId: z.string().max(40).optional(), address: z.string().max(500).optional() }) })), asyncHandler(booksController.createParty));
+apiRouter.post('/admin/books/stock-items', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ sku: z.string().trim().min(2).max(80), name: z.string().trim().min(2).max(160), type: z.enum(StockItemType), unit: z.string().trim().min(1).max(24), category: z.string().trim().max(80).optional(), hsnCode: z.string().trim().max(12).optional(), taxRate: z.number().min(0).max(100).optional() }) })), asyncHandler(booksController.createStockItem));
+apiRouter.post('/admin/books/entries', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ reference: z.string().trim().max(80).optional(), documentNumber: z.string().trim().max(100).optional(), source: z.string().trim().max(40).optional(), sourceReference: z.string().trim().max(120).optional(), channel: z.enum(BooksSalesChannel).optional(), memo: z.string().trim().min(2).max(500), occurredAt: z.string(), partyId: z.string().optional(), lines: z.array(z.object({ accountId: z.string().min(1), debit: booksMoney, credit: booksMoney, itemId: z.string().optional() })).min(2).max(100) }) })), asyncHandler(booksController.entry));
+apiRouter.post('/admin/books/entries/:id/reverse', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ params: idParams, body: z.object({ reason: z.string().trim().min(5).max(500) }) })), asyncHandler(booksController.reverseEntry));
+apiRouter.post('/admin/books/periods/close', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ startsOn: z.string(), endsOn: z.string() }) })), asyncHandler(booksController.closePeriod));
+apiRouter.post('/admin/books/stock-movements', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ itemId: z.string().min(1), batchCode: z.string().trim().min(1).max(80), location: z.string().trim().max(120).optional(), manufacturedAt: z.string().optional(), expiresAt: z.string().optional(), entryId: z.string().optional(), type: z.enum(StockMovementType), quantity: z.string().regex(/^-?\d+(?:\.\d{1,3})?$/), unitCost: booksMoney.optional(), reason: z.string().trim().max(500).optional(), movedAt: z.string() }) })), asyncHandler(booksController.stockMovement));
+apiRouter.post('/admin/books/bank-reconciliations', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ accountId: z.string().min(1), startsOn: z.string(), endsOn: z.string(), statementBalance: z.string().regex(/^-?\d+(?:\.\d{1,2})?$/) }) })), asyncHandler(booksController.bankReconciliation));
+apiRouter.get('/admin/books/reports', authenticate, authorize(UserRole.ADMIN), validate(z.object({ query: z.object({ from: z.string(), to: z.string() }) })), asyncHandler(booksController.reports));
 apiRouter.get('/admin/access', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.access));
 apiRouter.get('/admin/homepage-video', authenticate, authorize(UserRole.ADMIN), asyncHandler(adminController.homepageVideo));
 apiRouter.post('/admin/homepage-video/uploads/presign', authenticate, authorize(UserRole.ADMIN), writeLimiter, validate(z.object({ body: z.object({ fileName: z.string().min(1).max(200), mimeType: z.enum(['video/mp4', 'video/webm']), size: z.number().int().positive() }) })), asyncHandler(adminController.presignHomepageVideo));

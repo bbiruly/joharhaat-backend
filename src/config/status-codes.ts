@@ -403,6 +403,13 @@ export const ADMIN_EVENTS = entry({
   ENDORSEMENT_PUBLISHED: { code: 'A034', en: 'Featured endorsement published', hi: 'विशेष प्रशंसापत्र प्रकाशित किया गया' },
   ENDORSEMENT_UNPUBLISHED: { code: 'A035', en: 'Featured endorsement unpublished', hi: 'विशेष प्रशंसापत्र अप्रकाशित किया गया' },
   ENDORSEMENT_ARCHIVED: { code: 'A036', en: 'Featured endorsement archived', hi: 'विशेष प्रशंसापत्र संग्रहीत किया गया' },
+  BOOKS_SETUP_SAVED: { code: 'A037', en: 'Kolhan books configured', hi: 'कोल्हान बहीखाता सेटअप किया गया' },
+  BOOKS_ENTRY_POSTED: { code: 'A038', en: 'Accounting entry posted', hi: 'लेखांकन प्रविष्टि पोस्ट की गई' },
+  BOOKS_ENTRY_REVERSED: { code: 'A039', en: 'Accounting entry reversed', hi: 'लेखांकन प्रविष्टि रिवर्स की गई' },
+  BOOKS_PERIOD_CLOSED: { code: 'A040', en: 'Accounting period closed', hi: 'लेखांकन अवधि बंद की गई' },
+  STOCK_MOVEMENT_RECORDED: { code: 'A041', en: 'Stock movement recorded', hi: 'स्टॉक मूवमेंट दर्ज किया गया' },
+  BOOKS_BANK_RECONCILED: { code: 'A042', en: 'Bank statement compared with books', hi: 'बैंक स्टेटमेंट का बहीखाते से मिलान किया गया' },
+  BOOKS_REFERENCE_CREATED: { code: 'A043', en: 'Kolhan books reference added', hi: 'कोल्हान बहीखाते का नया रिकॉर्ड जोड़ा गया' },
 });
 
 /* ------------------------------------------------------------------ lookup */

@@ -226,6 +226,63 @@ enum ForecastConfidence {
   HIGH
 }
 
+enum BooksAccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum BooksEntryStatus {
+  DRAFT
+  POSTED
+  REVERSED
+}
+
+enum BooksPeriodStatus {
+  OPEN
+  CLOSED
+}
+
+enum BooksPartyType {
+  SUPPLIER
+  CUSTOMER
+  MANUFACTURER
+  OTHER
+}
+
+enum StockItemType {
+  FINISHED_GOOD
+  RAW_MATERIAL
+  PACKAGING
+}
+
+enum StockMovementType {
+  PURCHASE
+  PRODUCTION
+  CONSUMPTION
+  SALE
+  RETURN
+  DAMAGE
+  SAMPLE
+  EXPIRY
+  ADJUSTMENT
+}
+
+enum BooksSalesChannel {
+  DIRECT
+  WHOLESALE
+  RETAIL
+  MARKETPLACE
+  OTHER
+}
+
+enum BooksReconciliationStatus {
+  RECONCILED
+  DISCREPANCY
+}
+
 model User {
   id                     String                       @id @default(cuid())
   email                  String?                      @unique
@@ -1337,4 +1394,183 @@ model ReviewReport {
   @@unique([reviewId, reporterId])
   @@index([reviewId, createdAt])
   @@map("review_reports")
+}
+
+/// Kolhan's own books are intentionally separate from marketplace escrow and
+/// vendor wallet ledgers. No historic marketplace rows are backfilled here.
+model BooksSettings {
+  id           String   @id @default("kolhan")
+  startDate    DateTime @map("start_date") @db.Date
+  currencyCode String   @default("INR") @map("currency_code") @db.VarChar(3)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("books_settings")
+}
+
+model BooksAccount {
+  id                String                    @id @default(cuid())
+  code              String                    @unique
+  name              String
+  type              BooksAccountType
+  isSystem          Boolean                   @default(false) @map("is_system")
+  isCashAccount     Boolean                   @default(false) @map("is_cash_account")
+  isCostOfGoodsSold Boolean                   @default(false) @map("is_cost_of_goods_sold")
+  isActive          Boolean                   @default(true) @map("is_active")
+  createdAt         DateTime                  @default(now()) @map("created_at")
+  lines             BooksEntryLine[]
+  reconciliations   BooksBankReconciliation[]
+
+  @@index([type, isActive])
+  @@map("books_accounts")
+}
+
+model BooksParty {
+  id        String         @id @default(cuid())
+  type      BooksPartyType
+  name      String
+  email     String?
+  phone     String?
+  taxId     String?        @map("tax_id")
+  address   String?
+  isActive  Boolean        @default(true) @map("is_active")
+  createdAt DateTime       @default(now()) @map("created_at")
+  entries   BooksEntry[]
+
+  @@index([type, name])
+  @@map("books_parties")
+}
+
+model BooksEntry {
+  id              String             @id @default(cuid())
+  reference       String             @unique
+  documentNumber  String?            @map("document_number")
+  source          String             @default("MANUAL")
+  sourceReference String?            @map("source_reference")
+  channel         BooksSalesChannel?
+  memo            String
+  occurredAt      DateTime           @map("occurred_at") @db.Date
+  status          BooksEntryStatus   @default(POSTED)
+  partyId         String?            @map("party_id")
+  reversalOfId    String?            @unique @map("reversal_of_id")
+  createdById     String             @map("created_by_id")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  postedAt        DateTime?          @map("posted_at")
+  party           BooksParty?        @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  reversalOf      BooksEntry?        @relation("BooksReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversedBy      BooksEntry?        @relation("BooksReversal")
+  lines           BooksEntryLine[]
+  stockMovements  StockMovement[]
+
+  @@index([occurredAt, status])
+  @@index([source, sourceReference])
+  @@index([partyId, occurredAt])
+  @@map("books_entries")
+}
+
+model BooksEntryLine {
+  id          String       @id @default(cuid())
+  entryId     String       @map("entry_id")
+  accountId   String       @map("account_id")
+  description String?
+  debit       Decimal      @default(0) @db.Decimal(14, 2)
+  credit      Decimal      @default(0) @db.Decimal(14, 2)
+  itemId      String?      @map("item_id")
+  entry       BooksEntry   @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  account     BooksAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  item        StockItem?   @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([accountId, entryId])
+  @@index([itemId, entryId])
+  @@map("books_entry_lines")
+}
+
+model BooksPeriod {
+  id         String            @id @default(cuid())
+  startsOn   DateTime          @map("starts_on") @db.Date
+  endsOn     DateTime          @map("ends_on") @db.Date
+  status     BooksPeriodStatus @default(OPEN)
+  closedAt   DateTime?         @map("closed_at")
+  closedById String?           @map("closed_by_id")
+  createdAt  DateTime          @default(now()) @map("created_at")
+
+  @@unique([startsOn, endsOn])
+  @@index([status, startsOn, endsOn])
+  @@map("books_periods")
+}
+
+model BooksBankReconciliation {
+  id               String                    @id @default(cuid())
+  accountId        String                    @map("account_id")
+  startsOn         DateTime                  @map("starts_on") @db.Date
+  endsOn           DateTime                  @map("ends_on") @db.Date
+  statementBalance Decimal                   @map("statement_balance") @db.Decimal(14, 2)
+  bookBalance      Decimal                   @map("book_balance") @db.Decimal(14, 2)
+  difference       Decimal                   @db.Decimal(14, 2)
+  status           BooksReconciliationStatus
+  createdById      String                    @map("created_by_id")
+  createdAt        DateTime                  @default(now()) @map("created_at")
+  account          BooksAccount              @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@unique([accountId, startsOn, endsOn])
+  @@index([status, endsOn])
+  @@map("books_bank_reconciliations")
+}
+
+model StockItem {
+  id        String           @id @default(cuid())
+  sku       String           @unique
+  name      String
+  type      StockItemType
+  unit      String
+  category  String?
+  hsnCode   String?          @map("hsn_code")
+  taxRate   Decimal?         @map("tax_rate") @db.Decimal(5, 2)
+  isActive  Boolean          @default(true) @map("is_active")
+  createdAt DateTime         @default(now()) @map("created_at")
+  batches   StockBatch[]
+  movements StockMovement[]
+  lines     BooksEntryLine[]
+
+  @@index([type, isActive])
+  @@map("stock_items")
+}
+
+model StockBatch {
+  id             String          @id @default(cuid())
+  itemId         String          @map("item_id")
+  batchCode      String          @map("batch_code")
+  location       String?
+  manufacturedAt DateTime?       @map("manufactured_at") @db.Date
+  expiresAt      DateTime?       @map("expires_at") @db.Date
+  quantityOnHand Decimal         @default(0) @map("quantity_on_hand") @db.Decimal(14, 3)
+  unitCost       Decimal?        @map("unit_cost") @db.Decimal(14, 4)
+  createdAt      DateTime        @default(now()) @map("created_at")
+  item           StockItem       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  movements      StockMovement[]
+
+  @@unique([itemId, batchCode])
+  @@index([itemId, expiresAt])
+  @@map("stock_batches")
+}
+
+model StockMovement {
+  id          String            @id @default(cuid())
+  itemId      String            @map("item_id")
+  batchId     String            @map("batch_id")
+  entryId     String?           @map("entry_id")
+  type        StockMovementType
+  quantity    Decimal           @db.Decimal(14, 3)
+  unitCost    Decimal?          @map("unit_cost") @db.Decimal(14, 4)
+  reason      String?
+  movedAt     DateTime          @map("moved_at") @db.Date
+  createdById String            @map("created_by_id")
+  createdAt   DateTime          @default(now()) @map("created_at")
+  item        StockItem         @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  batch       StockBatch        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  entry       BooksEntry?       @relation(fields: [entryId], references: [id], onDelete: Restrict)
+
+  @@index([itemId, movedAt])
+  @@index([batchId, movedAt])
+  @@map("stock_movements")
 }
