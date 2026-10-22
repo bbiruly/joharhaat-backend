@@ -1,7 +1,23 @@
 import type { RequestHandler } from 'express';
 import * as books from '../services/books.service.js';
+import { listBooksRecords } from '../services/books-listing.js';
+import type { BooksListResource } from '../services/books-listing-rules.js';
 
 export const overview: RequestHandler = async (req, res) => res.json({ data: await books.booksOverview(req.auth!.userId) });
+export const list: RequestHandler = async (req, res) => res.json({ data: await listBooksRecords(req.auth!.userId, String(req.params.resource) as BooksListResource, {
+  page: Number(req.query.page ?? 1),
+  pageSize: Number(req.query.pageSize ?? 25),
+  direction: req.query.direction === 'asc' ? 'asc' : 'desc',
+  ...(typeof req.query.q === 'string' ? { q: req.query.q } : {}),
+  ...(typeof req.query.sort === 'string' ? { sort: req.query.sort } : {}),
+  ...(typeof req.query.status === 'string' ? { status: req.query.status } : {}),
+  ...(typeof req.query.type === 'string' ? { type: req.query.type } : {}),
+  ...(typeof req.query.from === 'string' ? { from: req.query.from } : {}),
+  ...(typeof req.query.to === 'string' ? { to: req.query.to } : {}),
+  ...(typeof req.query.accountId === 'string' ? { accountId: req.query.accountId } : {}),
+  ...(typeof req.query.itemId === 'string' ? { itemId: req.query.itemId } : {}),
+  ...(typeof req.query.active === 'boolean' ? { active: req.query.active } : typeof req.query.active === 'string' ? { active: req.query.active === 'true' } : {}),
+}) });
 export const setup: RequestHandler = async (req, res) => res.status(201).json({ data: await books.setupBooks(req.auth!.userId, req.requestId, req.body.startDate) });
 export const accounts: RequestHandler = async (req, res) => res.json({ data: await books.listAccounts(req.auth!.userId) });
 export const createAccount: RequestHandler = async (req, res) => res.status(201).json({ data: await books.createAccount(req.auth!.userId, req.requestId, req.body) });
@@ -13,3 +29,4 @@ export const closePeriod: RequestHandler = async (req, res) => res.status(201).j
 export const stockMovement: RequestHandler = async (req, res) => res.status(201).json({ data: await books.recordStockMovement(req.auth!.userId, req.requestId, req.body) });
 export const bankReconciliation: RequestHandler = async (req, res) => res.status(201).json({ data: await books.reconcileBank(req.auth!.userId, req.requestId, req.body) });
 export const reports: RequestHandler = async (req, res) => res.json({ data: await books.booksReports(req.auth!.userId, String(req.query.from), String(req.query.to)) });
+export const cashFlow: RequestHandler = async (req, res) => res.json({ data: await books.booksCashFlow(req.auth!.userId, String(req.query.from), String(req.query.to)) });

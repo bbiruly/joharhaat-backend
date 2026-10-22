@@ -278,6 +278,13 @@ enum BooksSalesChannel {
   OTHER
 }
 
+enum BooksCashFlowActivity {
+  OPERATING
+  INVESTING
+  FINANCING
+  TRANSFER
+}
+
 enum BooksReconciliationStatus {
   RECONCILED
   DISCREPANCY
@@ -1329,6 +1336,80 @@ model RolePermission {
   @@map("role_permissions")
 }
 
+/// Internal JoharHaat staff. Kept separate from marketplace User accounts.
+model Employee {
+  id          String             @id @default(cuid())
+  employeeCode String            @unique @map("employee_code") @db.VarChar(32)
+  fullName    String             @map("full_name") @db.VarChar(160)
+  email       String?            @unique @db.VarChar(255)
+  mobile      String?            @db.VarChar(32)
+  department  String             @db.VarChar(100)
+  designation String             @db.VarChar(120)
+  joinedAt    DateTime           @map("joined_at") @db.Date
+  isActive    Boolean            @default(true) @map("is_active")
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+  payroll     EmployeePayroll[]
+  goals       EmployeeGoal[]
+  reviews     EmployeeReview[]
+
+  @@index([isActive, department])
+  @@map("employees")
+}
+
+model EmployeePayroll {
+  id                String   @id @default(cuid())
+  employeeId        String   @map("employee_id")
+  periodYear        Int      @map("period_year")
+  periodMonth       Int      @map("period_month")
+  baseSalary        Decimal  @map("base_salary") @db.Decimal(12, 2)
+  allowances        Decimal  @default(0) @db.Decimal(12, 2)
+  deductions        Decimal  @default(0) @db.Decimal(12, 2)
+  grossPay          Decimal  @map("gross_pay") @db.Decimal(12, 2)
+  netPay            Decimal  @map("net_pay") @db.Decimal(12, 2)
+  status            String   @default("PENDING") @db.VarChar(16)
+  paidAt            DateTime? @map("paid_at")
+  paymentReference  String?  @map("payment_reference") @db.VarChar(120)
+  notes             String?  @db.VarChar(1000)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  employee          Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@unique([employeeId, periodYear, periodMonth])
+  @@index([periodYear, periodMonth, status])
+  @@map("employee_payroll")
+}
+
+model EmployeeGoal {
+  id          String    @id @default(cuid())
+  employeeId  String    @map("employee_id")
+  title       String    @db.VarChar(180)
+  description String?   @db.VarChar(1200)
+  dueAt       DateTime? @map("due_at") @db.Date
+  status      String    @default("ACTIVE") @db.VarChar(16)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, status])
+  @@map("employee_goals")
+}
+
+model EmployeeReview {
+  id          String   @id @default(cuid())
+  employeeId  String   @map("employee_id")
+  periodStart DateTime @map("period_start") @db.Date
+  periodEnd   DateTime @map("period_end") @db.Date
+  rating      Int
+  notes       String   @db.VarChar(3000)
+  reviewedAt  DateTime @default(now()) @map("reviewed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@index([employeeId, reviewedAt])
+  @@map("employee_reviews")
+}
+
 /// A customer's review of a product they actually received.
 ///
 /// `orderId` is not decoration: it is the entitlement. A review may only be
@@ -1476,6 +1557,8 @@ model BooksEntryLine {
   debit       Decimal      @default(0) @db.Decimal(14, 2)
   credit      Decimal      @default(0) @db.Decimal(14, 2)
   itemId      String?      @map("item_id")
+  cashFlowActivity BooksCashFlowActivity? @map("cash_flow_activity")
+  cashFlowParticular String? @map("cash_flow_particular")
   entry       BooksEntry   @relation(fields: [entryId], references: [id], onDelete: Restrict)
   account     BooksAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
   item        StockItem?   @relation(fields: [itemId], references: [id], onDelete: Restrict)

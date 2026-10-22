@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { BooksAccountType, BooksEntryStatus, BooksPartyType, BooksPeriodStatus, BooksReconciliationStatus, BooksSalesChannel, Prisma, StockItemType, StockMovementType } from '../generated/prisma/client.js';
+import { BooksAccountType, BooksEntryStatus, BooksPartyType, BooksPeriodStatus, BooksReconciliationStatus, BooksSalesChannel, LedgerType, PaymentIntentStatus, Prisma, StockItemType, StockMovementType } from '../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 import { adminAccess } from './admin.service.js';
 import { ApiError } from '../utils/api-error.js';
 import { codeOf, type StatusEvent } from '../config/status-codes.js';
-import { assertBalancedJournal, assertWithinBooksStart, movementDelta, type JournalLineInput } from './books-rules.js';
+import { assertBalancedJournal, assertWithinBooksStart, calculateCashFlow, movementDelta, validateCashFlowClassification, type JournalLineInput } from './books-rules.js';
 
 const FINANCE = 'payouts:manage' as const;
 const defaultAccounts = [
@@ -129,6 +129,7 @@ export async function postEntry(userId: string, requestId: string | undefined, i
     const accountIds = [...new Set(input.lines.map((line) => line.accountId))];
     const accounts = await tx.booksAccount.findMany({ where: { id: { in: accountIds }, isActive: true }, select: { id: true } });
     if (accounts.length !== accountIds.length) throw new ApiError(422, 'Every journal account must exist and be active.', 'BOOKS_ACCOUNT_INVALID');
+    validateCashFlowClassification(input.lines, new Set((await tx.booksAccount.findMany({ where: { id: { in: accountIds }, isCashAccount: true }, select: { id: true } })).map((account) => account.id)));
     const itemIds = [...new Set(input.lines.flatMap((line) => line.itemId ? [line.itemId] : []))];
     if (itemIds.length && (await tx.stockItem.count({ where: { id: { in: itemIds }, isActive: true } })) !== itemIds.length)
       throw new ApiError(422, 'Every linked stock item must exist and be active.', 'STOCK_ITEM_INVALID');
@@ -141,7 +142,7 @@ export async function postEntry(userId: string, requestId: string | undefined, i
       ...(input.channel ? { channel: input.channel } : {}), memo: input.memo.trim(), occurredAt,
       ...(input.partyId ? { party: { connect: { id: input.partyId } } } : {}), createdById: userId,
       status: BooksEntryStatus.POSTED, postedAt: new Date(),
-      lines: { create: input.lines.map((line) => ({ accountId: line.accountId, debit: new Prisma.Decimal(line.debit), credit: new Prisma.Decimal(line.credit), itemId: line.itemId ?? null })) },
+      lines: { create: input.lines.map((line) => ({ accountId: line.accountId, debit: new Prisma.Decimal(line.debit), credit: new Prisma.Decimal(line.credit), itemId: line.itemId ?? null, cashFlowActivity: line.cashFlowActivity ?? null, cashFlowParticular: line.cashFlowParticular?.trim() || null })) },
     } });
     await tx.adminAuditLog.create({ data: auditData(userId, 'BOOKS_ENTRY_POSTED', 'BooksEntry', entry.id, requestId) });
     return entry;
@@ -162,7 +163,7 @@ export async function reverseEntry(userId: string, requestId: string | undefined
       reference: `REV-${randomUUID()}`, source: 'REVERSAL', sourceReference: original.reference,
       memo: `Reversal: ${reason.trim()}`, occurredAt: new Date(new Date().toISOString().slice(0, 10)),
       status: BooksEntryStatus.POSTED, postedAt: new Date(), createdById: userId, reversalOfId: id,
-      lines: { create: original.lines.map((line) => ({ accountId: line.accountId, debit: line.credit, credit: line.debit, itemId: line.itemId })) },
+      lines: { create: original.lines.map((line) => ({ accountId: line.accountId, debit: line.credit, credit: line.debit, itemId: line.itemId, cashFlowActivity: line.cashFlowActivity, cashFlowParticular: line.cashFlowParticular })) },
     } });
     await tx.booksEntry.update({ where: { id }, data: { status: BooksEntryStatus.REVERSED } });
     await tx.adminAuditLog.create({ data: auditData(userId, 'BOOKS_ENTRY_REVERSED', 'BooksEntry', id, requestId) });
@@ -312,5 +313,49 @@ export async function booksReports(userId: string, fromValue: string, toValue: s
     channelMargins: channelMarginRows,
     receivables: [...partyBalances.values()].filter((row) => !row.receivable.isZero()).map((row) => ({ partyId: row.partyId, partyName: row.partyName, amount: row.receivable.toString() })),
     payables: [...partyBalances.values()].filter((row) => !row.payable.isZero()).map((row) => ({ partyId: row.partyId, partyName: row.partyName, amount: row.payable.toString() })),
+  };
+}
+
+export async function booksCashFlow(userId: string, fromValue: string, toValue: string) {
+  await adminAccess(userId, FINANCE);
+  const from = parseDay(fromValue), to = parseDay(toValue);
+  if (from > to) throw new ApiError(422, 'Report end date must not come before its start date.', 'BOOKS_PERIOD_INVALID');
+  const settings = await requireSettings();
+  assertWithinBooksStart(from, settings.startDate);
+  const cashAccounts = await prisma.booksAccount.findMany({ where: { isCashAccount: true }, select: { id: true } });
+  const cashIds = cashAccounts.map((account) => account.id);
+  const lineWhere = { accountId: { in: cashIds }, entry: { status: { in: [BooksEntryStatus.POSTED, BooksEntryStatus.REVERSED] }, occurredAt: { gte: from, lte: to } } };
+  const [periodLines, openingLines, closingLines, payments, transfers] = await Promise.all([
+    prisma.booksEntryLine.findMany({ where: lineWhere, include: { account: true, entry: { select: { reference: true, memo: true, occurredAt: true } } }, orderBy: { entry: { occurredAt: 'asc' } } }),
+    prisma.booksEntryLine.findMany({ where: { accountId: { in: cashIds }, entry: { status: { in: [BooksEntryStatus.POSTED, BooksEntryStatus.REVERSED] }, occurredAt: { lt: from } } }, select: { debit: true, credit: true } }),
+    prisma.booksEntryLine.findMany({ where: { accountId: { in: cashIds }, entry: { status: { in: [BooksEntryStatus.POSTED, BooksEntryStatus.REVERSED] }, occurredAt: { lte: to } } }, select: { debit: true, credit: true } }),
+    prisma.paymentIntent.findMany({ where: { status: PaymentIntentStatus.SUCCEEDED, verifiedAt: { gte: from, lte: new Date(to.getTime() + 86400000 - 1) } }, select: { id: true, providerPaymentId: true, amount: true } }),
+    prisma.walletLedger.findMany({ where: { type: LedgerType.BANK_TRANSFER, createdAt: { gte: from, lte: new Date(to.getTime() + 86400000 - 1) } }, select: { reference: true, amount: true } }),
+  ]);
+  const statement = calculateCashFlow(periodLines.map((line) => ({ activity: line.cashFlowActivity, particular: line.cashFlowParticular, debit: line.debit.toString(), credit: line.credit.toString() })));
+  const sum = (lines: { debit: Prisma.Decimal; credit: Prisma.Decimal }[]) => lines.reduce((total, line) => total.plus(line.debit).minus(line.credit), new Prisma.Decimal(0));
+  const openingCash = sum(openingLines), closingCash = sum(closingLines);
+  const paymentRefs = payments.flatMap((payment) => payment.providerPaymentId ? [payment.providerPaymentId] : [payment.id]);
+  const transferRefs = transfers.map((transfer) => transfer.reference);
+  const relevantRefs = [...paymentRefs, ...transferRefs];
+  const matchedLines = relevantRefs.length ? await prisma.booksEntryLine.findMany({ where: { accountId: { in: cashIds }, entry: { sourceReference: { in: relevantRefs }, status: { in: [BooksEntryStatus.POSTED, BooksEntryStatus.REVERSED] }, occurredAt: { gte: from, lte: to } } }, select: { debit: true, credit: true, entry: { select: { sourceReference: true } } } }) : [];
+  const matchedByRef = new Map<string, Prisma.Decimal>();
+  for (const line of matchedLines) {
+    const reference = line.entry.sourceReference;
+    if (!reference) continue;
+    matchedByRef.set(reference, (matchedByRef.get(reference) ?? new Prisma.Decimal(0)).plus(line.debit).minus(line.credit));
+  }
+  const collected = payments.reduce((total, payment) => total.plus(payment.amount), new Prisma.Decimal(0));
+  const transferred = transfers.reduce((total, transfer) => total.plus(transfer.amount), new Prisma.Decimal(0));
+  const recordedCollections = payments.reduce((total, payment) => total.plus(matchedByRef.get(payment.providerPaymentId ?? payment.id) ?? 0), new Prisma.Decimal(0));
+  const recordedTransfers = transfers.reduce((total, transfer) => total.plus((matchedByRef.get(transfer.reference) ?? new Prisma.Decimal(0)).abs()), new Prisma.Decimal(0));
+  return {
+    from: fromValue, to: toValue,
+    activities: { operating: statement.operating, investing: statement.investing, financing: statement.financing, unclassified: statement.unclassified },
+    openingCash: openingCash.toString(), closingCash: closingCash.toString(), netChange: statement.netChange,
+    marketplaceReconciliation: {
+      customerCollections: { operational: collected.toString(), recordedInBooks: recordedCollections.toString(), difference: collected.minus(recordedCollections).toString(), transactions: payments.length },
+      vendorBankTransfers: { operational: transferred.toString(), recordedInBooks: recordedTransfers.toString(), difference: transferred.minus(recordedTransfers).toString(), transactions: transfers.length },
+    },
   };
 }

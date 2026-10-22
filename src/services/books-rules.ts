@@ -5,6 +5,52 @@ export interface JournalLineInput {
   debit: string | number;
   credit: string | number;
   itemId?: string | undefined;
+  cashFlowActivity?: 'OPERATING' | 'INVESTING' | 'FINANCING' | 'TRANSFER' | null | undefined;
+  cashFlowParticular?: string | null | undefined;
+}
+
+export function validateCashFlowClassification(lines: JournalLineInput[], cashAccountIds: Set<string>) {
+  for (const line of lines) {
+    if (!cashAccountIds.has(line.accountId)) continue;
+    if (!line.cashFlowActivity || !line.cashFlowParticular?.trim())
+      throw new ApiError(422, 'Classify each cash or bank movement and enter its particular.', 'BOOKS_CASH_FLOW_CLASSIFICATION_REQUIRED');
+  }
+}
+
+export interface CashFlowInputRow {
+  activity: 'OPERATING' | 'INVESTING' | 'FINANCING' | 'TRANSFER' | null;
+  particular: string | null;
+  debit: string;
+  credit: string;
+}
+
+export function calculateCashFlow(rows: CashFlowInputRow[]) {
+  const result = {
+    OPERATING: { rows: new Map<string, { inflow: bigint; outflow: bigint }>(), inflow: 0n, outflow: 0n },
+    INVESTING: { rows: new Map<string, { inflow: bigint; outflow: bigint }>(), inflow: 0n, outflow: 0n },
+    FINANCING: { rows: new Map<string, { inflow: bigint; outflow: bigint }>(), inflow: 0n, outflow: 0n },
+    unclassified: { rows: new Map<string, { inflow: bigint; outflow: bigint }>(), inflow: 0n, outflow: 0n },
+  };
+  for (const line of rows) {
+    if (line.activity === 'TRANSFER') continue;
+    const group = line.activity ? result[line.activity] : result.unclassified;
+    const label = line.particular?.trim() || 'Unclassified';
+    const row = group.rows.get(label) ?? { inflow: 0n, outflow: 0n };
+    row.inflow += amountInPaise(line.debit);
+    row.outflow += amountInPaise(line.credit);
+    group.inflow += amountInPaise(line.debit);
+    group.outflow += amountInPaise(line.credit);
+    group.rows.set(label, row);
+  }
+  const serialize = (group: typeof result.OPERATING) => ({
+    rows: [...group.rows].map(([particular, values]) => ({ particular, inflow: (values.inflow / 100n).toString() + '.' + String(values.inflow % 100n).padStart(2, '0'), outflow: (values.outflow / 100n).toString() + '.' + String(values.outflow % 100n).padStart(2, '0') })),
+    totalInflow: (group.inflow / 100n).toString() + '.' + String(group.inflow % 100n).padStart(2, '0'),
+    totalOutflow: (group.outflow / 100n).toString() + '.' + String(group.outflow % 100n).padStart(2, '0'),
+    net: ((group.inflow - group.outflow) < 0n ? '-' : '') + ( (group.inflow - group.outflow < 0n ? -(group.inflow - group.outflow) : group.inflow - group.outflow) / 100n).toString() + '.' + String((group.inflow - group.outflow < 0n ? -(group.inflow - group.outflow) : group.inflow - group.outflow) % 100n).padStart(2, '0'),
+  });
+  const operating = serialize(result.OPERATING), investing = serialize(result.INVESTING), financing = serialize(result.FINANCING), unclassified = serialize(result.unclassified);
+  const netPaise = result.OPERATING.inflow - result.OPERATING.outflow + result.INVESTING.inflow - result.INVESTING.outflow + result.FINANCING.inflow - result.FINANCING.outflow;
+  return { operating, investing, financing, unclassified, netChange: ((netPaise < 0n ? '-' : '') + (netPaise < 0n ? -netPaise : netPaise) / 100n + '.' + String((netPaise < 0n ? -netPaise : netPaise) % 100n).padStart(2, '0')) };
 }
 
 export function amountInPaise(value: string | number): bigint {

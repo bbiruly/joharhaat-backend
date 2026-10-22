@@ -410,6 +410,12 @@ export const ADMIN_EVENTS = entry({
   STOCK_MOVEMENT_RECORDED: { code: 'A041', en: 'Stock movement recorded', hi: 'स्टॉक मूवमेंट दर्ज किया गया' },
   BOOKS_BANK_RECONCILED: { code: 'A042', en: 'Bank statement compared with books', hi: 'बैंक स्टेटमेंट का बहीखाते से मिलान किया गया' },
   BOOKS_REFERENCE_CREATED: { code: 'A043', en: 'Kolhan books reference added', hi: 'कोल्हान बहीखाते का नया रिकॉर्ड जोड़ा गया' },
+  EMPLOYEE_CREATED: { code: 'A044', en: 'Employee profile created', hi: 'कर्मचारी प्रोफ़ाइल बनाई गई' },
+  EMPLOYEE_UPDATED: { code: 'A045', en: 'Employee profile updated', hi: 'कर्मचारी प्रोफ़ाइल अपडेट की गई' },
+  PAYROLL_RECORDED: { code: 'A046', en: 'Payroll record created', hi: 'वेतन रिकॉर्ड बनाया गया' },
+  PAYROLL_PAID: { code: 'A047', en: 'Payroll marked as paid', hi: 'वेतन भुगतान दर्ज किया गया' },
+  EMPLOYEE_GOAL_SAVED: { code: 'A048', en: 'Employee goal saved', hi: 'कर्मचारी लक्ष्य सहेजा गया' },
+  EMPLOYEE_REVIEW_RECORDED: { code: 'A049', en: 'Employee performance review recorded', hi: 'कर्मचारी प्रदर्शन समीक्षा दर्ज की गई' },
 });
 
 /* ------------------------------------------------------------------ lookup */
