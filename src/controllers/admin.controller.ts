@@ -11,6 +11,7 @@ import * as adminHomepageVideo from '../services/admin-homepage-video.service.js
 import * as influencerCommission from '../services/influencer-commission.service.js';
 import * as adminPayout from '../services/admin-payout.service.js';
 import * as featuredEndorsement from '../services/featured-endorsement.service.js';
+import * as employee from '../services/employee.service.js';
 
 export const analytics: RequestHandler = async (req, res) => res.json({ data: await admin.analytics(req.auth!.userId, Number(req.query.months ?? 6)) });
 export const haats: RequestHandler = async (req, res) => res.json({ data: await admin.listHaats(req.auth!.userId) });
@@ -71,6 +72,17 @@ export const createTeamMember: RequestHandler = async (req, res) => res.status(2
 export const removeTeamMember: RequestHandler = async (req, res) => res.json({ data: await admin.removeTeamMember(req.auth!.userId, req.requestId, String(req.params.id)) });
 export const permissionMatrix: RequestHandler = async (req, res) => res.json({ data: await admin.readPermissionMatrix(req.auth!.userId) });
 export const setRolePermissions: RequestHandler = async (req, res) => res.json({ data: await admin.setRolePermissions(req.auth!.userId, req.requestId, req.body.role as AdminTeamRole, req.body.permissions) });
+export const employeeSummary: RequestHandler = async (req, res) => res.json({ data: await employee.summary(req.auth!.userId) });
+export const employees: RequestHandler = async (req, res) => res.json({ data: await employee.listEmployees(req.auth!.userId, req.query) });
+export const employeeDetail: RequestHandler = async (req, res) => res.json({ data: await employee.employeeDetail(req.auth!.userId, String(req.params.id)) });
+export const employeePayroll: RequestHandler = async (req, res) => res.json({ data: await employee.listPayroll(req.auth!.userId, req.query) });
+export const employeeGoals: RequestHandler = async (req, res) => res.json({ data: await employee.listGoals(req.auth!.userId, req.query) });
+export const employeeReviews: RequestHandler = async (req, res) => res.json({ data: await employee.listReviews(req.auth!.userId, req.query) });
+export const saveEmployee: RequestHandler = async (req, res) => res.status(req.body.id ? 200 : 201).json({ data: await employee.saveEmployee(req.auth!.userId, req.requestId, req.body) });
+export const createPayroll: RequestHandler = async (req, res) => res.status(201).json({ data: await employee.createPayroll(req.auth!.userId, req.requestId, req.body) });
+export const markPayrollPaid: RequestHandler = async (req, res) => res.json({ data: await employee.markPayrollPaid(req.auth!.userId, req.requestId, String(req.params.id), req.body) });
+export const saveEmployeeGoal: RequestHandler = async (req, res) => res.status(req.body.id ? 200 : 201).json({ data: await employee.saveGoal(req.auth!.userId, req.requestId, req.body) });
+export const createEmployeeReview: RequestHandler = async (req, res) => res.status(201).json({ data: await employee.createReview(req.auth!.userId, req.requestId, req.body) });
 export const homepageVideo: RequestHandler = async (req, res) => res.json({ data: await adminHomepageVideo.homepageVideoForAdmin(req.auth!.userId) });
 export const presignHomepageVideo: RequestHandler = async (req, res) => res.status(201).json({ data: await adminHomepageVideo.presignHomepageVideo(req.auth!.userId, req.body) });
 export const updateHomepageVideo: RequestHandler = async (req, res) => res.json({ data: await adminHomepageVideo.updateHomepageVideo(req.auth!.userId, req.requestId, req.body) });

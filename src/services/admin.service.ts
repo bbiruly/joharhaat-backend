@@ -11,10 +11,10 @@ import { logAudit, writeAudit } from '../utils/audit-log.js';
 import { cartAbandonmentRate, consignmentTotals, haatPerformance, monthlySeries, orderTotals } from './admin-analytics.service.js';
 import { recalculateOrderCommissions } from './influencer-commission.service.js';
 
-export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'shipping:manage'|'team:manage';
+export type AdminPermission = 'analytics:read'|'analytics:export'|'orders:manage'|'payouts:manage'|'marketing:manage'|'moderation:manage'|'haats:manage'|'shipping:manage'|'team:manage'|'employees:manage';
 
 /** Every permission the system understands. The Settings matrix offers these. */
-export const ALL_PERMISSIONS: AdminPermission[] = ['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','shipping:manage','team:manage'];
+export const ALL_PERMISSIONS: AdminPermission[] = ['analytics:read','analytics:export','orders:manage','payouts:manage','marketing:manage','moderation:manage','haats:manage','shipping:manage','team:manage','employees:manage'];
 
 /**
  * Fallback matrix. A role with no rows in `role_permissions` uses these, so an
